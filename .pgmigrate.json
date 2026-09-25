@@ -1,0 +1,19 @@
+{
+  "databaseUrl": {
+    "env": "DATABASE_URL"
+  },
+  "migrationsTable": "pgmigrations",
+  "dir": "migrations",
+  "direction": "up",
+  "count": 1,
+  "ignorePattern": "^(?!.*\\.(ts|js)$).*",
+  "schema": "public",
+  "decamelize": true,
+  "checkOrder": true,
+  "createSchema": false,
+  "createMigrationsSchema": false,
+  "single-transaction": false,
+  "noLock": false,
+  "fake": false,
+  "verbose": true
+}

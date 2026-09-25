@@ -1,0 +1,81 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mprnt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mprnt
+      POSTGRES_USER: mprnt_user
+      POSTGRES_PASSWORD: mprnt_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - mprnt-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mprnt_user -d mprnt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: mprnt-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mprnt-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Adminer (Database UI)
+  adminer:
+    image: adminer:latest
+    container_name: mprnt-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      - postgres
+    networks:
+      - mprnt-network
+
+  # MinIO (S3-compatible storage) - Optional, can be started separately
+  # Uncomment when docker image access is available
+  # minio:
+  #   image: quay.io/minio/minio:latest
+  #   container_name: mprnt-minio
+  #   restart: unless-stopped
+  #   command: server /data --console-address ":9001"
+  #   environment:
+  #     MINIO_ROOT_USER: minio_admin
+  #     MINIO_ROOT_PASSWORD: minio_password
+  #   ports:
+  #     - "9000:9000"
+  #     - "9001:9001"
+  #   volumes:
+  #     - minio_data:/data
+  #   networks:
+  #     - mprnt-network
+
+networks:
+  mprnt-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  # minio_data:

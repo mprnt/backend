@@ -1,0 +1,297 @@
+{
+  "info": {
+    "name": "MPrnt Backend - Phase 2 (Document Management)",
+    "description": "API endpoints for document upload, processing, and preview",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "apiVersion",
+      "value": "v1",
+      "type": "string"
+    },
+    {
+      "key": "sessionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "documentId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Create Session",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Save sessionId to variable",
+              "var jsonData = pm.response.json();",
+              "if (jsonData.status === 'success' && jsonData.data.sessionId) {",
+              "    pm.collectionVariables.set('sessionId', jsonData.data.sessionId);",
+              "    console.log('Session ID saved:', jsonData.data.sessionId);",
+              "}",
+              "",
+              "// Test response",
+              "pm.test('Status is 201', function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "",
+              "pm.test('Response has sessionId', function () {",
+              "    pm.expect(jsonData.data).to.have.property('sessionId');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kioskId\": \"M001\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/sessions",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "sessions"]
+        },
+        "description": "Create a new print session"
+      }
+    },
+    {
+      "name": "2. Upload Document (Image)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Save documentId to variable",
+              "var jsonData = pm.response.json();",
+              "if (jsonData.status === 'success' && jsonData.data.documentId) {",
+              "    pm.collectionVariables.set('documentId', jsonData.data.documentId);",
+              "    console.log('Document ID saved:', jsonData.data.documentId);",
+              "}",
+              "",
+              "// Test response",
+              "pm.test('Status is 201', function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "",
+              "pm.test('Document uploaded successfully', function () {",
+              "    pm.expect(jsonData.message).to.include('successfully');",
+              "    pm.expect(jsonData.data).to.have.property('documentId');",
+              "    pm.expect(jsonData.data).to.have.property('filename');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "document",
+              "type": "file",
+              "src": "test-files/test-image.png",
+              "description": "Upload a test image file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/sessions/{{sessionId}}/documents",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "sessions", "{{sessionId}}", "documents"]
+        },
+        "description": "Upload an image document to the session. Make sure to run 'Create Session' first."
+      }
+    },
+    {
+      "name": "3. Get Session Document",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var jsonData = pm.response.json();",
+              "pm.test('Document exists', function () {",
+              "    pm.expect(jsonData.data).to.have.property('documentId');",
+              "    pm.expect(jsonData.data).to.have.property('processed');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/sessions/{{sessionId}}/documents",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "sessions", "{{sessionId}}", "documents"]
+        },
+        "description": "Get the document associated with a session"
+      }
+    },
+    {
+      "name": "4. Get Document Preview (NEW)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.test('Preview data exists', function () {",
+              "    pm.expect(jsonData.data).to.have.property('documentId');",
+              "    pm.expect(jsonData.data).to.have.property('filename');",
+              "    pm.expect(jsonData.data).to.have.property('fileType');",
+              "    pm.expect(jsonData.data).to.have.property('pageCount');",
+              "    pm.expect(jsonData.data).to.have.property('processed');",
+              "    pm.expect(jsonData.data).to.have.property('thumbnails');",
+              "    pm.expect(jsonData.data).to.have.property('documentUrl');",
+              "});",
+              "",
+              "pm.test('Thumbnails array exists', function () {",
+              "    pm.expect(jsonData.data.thumbnails).to.be.an('array');",
+              "});",
+              "",
+              "pm.test('Document URL is valid', function () {",
+              "    pm.expect(jsonData.data.documentUrl).to.be.a('string');",
+              "    pm.expect(jsonData.data.documentUrl).to.include('http');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/documents/{{documentId}}/preview",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "documents", "{{documentId}}", "preview"]
+        },
+        "description": "Get document preview with thumbnails and pre-signed URLs. Wait 5-10 seconds after upload for processing to complete."
+      }
+    },
+    {
+      "name": "5. Get Document Details",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var jsonData = pm.response.json();",
+              "pm.test('Document details exist', function () {",
+              "    pm.expect(jsonData.data).to.have.property('documentId');",
+              "    pm.expect(jsonData.data).to.have.property('filename');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/documents/{{documentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "documents", "{{documentId}}"]
+        },
+        "description": "Get detailed information about a specific document"
+      }
+    },
+    {
+      "name": "6. Get Download URL",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var jsonData = pm.response.json();",
+              "pm.test('Download URL exists', function () {",
+              "    pm.expect(jsonData.data).to.have.property('downloadUrl');",
+              "    pm.expect(jsonData.data).to.have.property('expiresIn');",
+              "    pm.expect(jsonData.data.downloadUrl).to.include('http');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/documents/{{documentId}}/download",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "documents", "{{documentId}}", "download"]
+        },
+        "description": "Get a pre-signed download URL for the document (expires in 1 hour)"
+      }
+    },
+    {
+      "name": "7. Delete Document",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var jsonData = pm.response.json();",
+              "pm.test('Document deleted', function () {",
+              "    pm.expect(jsonData.message).to.include('deleted');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/{{apiVersion}}/documents/{{documentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "{{apiVersion}}", "documents", "{{documentId}}"]
+        },
+        "description": "Delete a document from both database and S3 storage"
+      }
+    }
+  ]
+}
