@@ -1,13 +1,6 @@
 import { createClient, RedisClientType } from 'redis';
+import env from '../config/environment';
 import logger from '../utils/logger';
-
-const env = {
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: Number(process.env.REDIS_PORT || 6379),
-    password: process.env.REDIS_PASSWORD,
-  },
-};
 
 /**
  * Redis Cache Service
@@ -18,13 +11,15 @@ class CacheService {
   private connected: boolean = false;
 
   constructor() {
-    this.client = createClient({
-      socket: {
-        host: env.redis.host,
-        port: env.redis.port,
-      },
-      password: env.redis.password || undefined,
-    });
+    this.client = process.env.REDIS_URL
+      ? createClient({ url: env.redis.url })
+      : createClient({
+          socket: {
+            host: env.redis.host,
+            port: env.redis.port,
+          },
+          password: env.redis.password || undefined,
+        });
 
     this.client.on('error', (err) => {
       logger.error('Redis cache client error', { error: err.message });
