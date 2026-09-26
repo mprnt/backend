@@ -22,13 +22,21 @@ import { websocketService } from './websocketService';
  * The same service handles both — no separate mock needed.
  */
 export class PaymentService {
-  private paymentGateway: IPaymentService;
+  private paymentGateway: IPaymentService | null = null;
+  private injectedGateway?: IPaymentService;
 
   constructor(
     private database: Database = db,
     gateway?: IPaymentService
   ) {
-    this.paymentGateway = gateway || new RazorpayService();
+    this.injectedGateway = gateway;
+  }
+
+  private getGateway(): IPaymentService {
+    if (!this.paymentGateway) {
+      this.paymentGateway = this.injectedGateway || new RazorpayService();
+    }
+    return this.paymentGateway;
   }
 
   /**
@@ -87,7 +95,7 @@ export class PaymentService {
       }
 
       // 3. Create payment order via gateway
-      const order = await this.paymentGateway.createOrder({
+      const order = await this.getGateway().createOrder({
         jobId: params.jobId,
         amount: params.amount,
         currency: params.currency || 'INR',
@@ -158,7 +166,7 @@ export class PaymentService {
       const order = orderResult.rows[0];
 
       // 2. Verify payment with gateway
-      const isValid = await this.paymentGateway.verifyPayment(params);
+      const isValid = await this.getGateway().verifyPayment(params);
 
       if (!isValid) {
         throw new AppError('Payment verification failed', 400);
