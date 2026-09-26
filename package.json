@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "nodemon",
     "dev:worker": "nodemon --watch src/workers --watch src/queues --exec ts-node src/workers/index.ts",
-    "build": "tsc",
+    "build": "npm ci --omit=dev && tsc",
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/index.js",
     "test": "jest --coverage",
