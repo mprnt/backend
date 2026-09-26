@@ -6,6 +6,7 @@ import logger from '../utils/logger';
 import crypto from 'crypto';
 import { addDocumentProcessingJob } from '../queues/documentQueue';
 import { cacheService, CacheKeys } from './cacheService';
+import { PDFParse } from 'pdf-parse';
 
 interface UploadDocumentParams {
   sessionId: string;
@@ -26,15 +27,18 @@ interface Document {
 
 export class DocumentService {
   /**
-   * Extract page count from PDF (placeholder for now)
-   * TODO: Implement with pdf-parse library
+   * Extract page count from the uploaded document.
    */
-  private async extractPageCount(mimeType: string): Promise<number | null> {
+  private async extractPageCount(mimeType: string, fileBuffer: Buffer): Promise<number | null> {
     if (mimeType === 'application/pdf') {
-      // TODO: Use pdf-parse to extract page count
-      // For now, return null (will implement in next step)
-      logger.info('PDF page extraction not yet implemented');
-      return null;
+      const parser = new PDFParse({ data: fileBuffer });
+
+      try {
+        const info = await parser.getInfo();
+        return info.total;
+      } finally {
+        await parser.destroy();
+      }
     }
 
     // For images, page count is always 1
@@ -87,7 +91,7 @@ export class DocumentService {
       await storageService.uploadFile(s3Key, file.buffer, file.mimetype);
 
       // Extract page count
-      const pageCount = await this.extractPageCount(file.mimetype);
+      const pageCount = await this.extractPageCount(file.mimetype, file.buffer);
 
       // Store document metadata in database
       const documentId = crypto.randomUUID();

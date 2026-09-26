@@ -63,10 +63,10 @@ export class SessionController {
   async createSession(req: Request, res: Response): Promise<void> {
     const { kioskId } = req.body;
     const clientIp = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
+    const userAgent = req.headers['user-agent'] as string | undefined;
 
     logger.info('Creating session request', {
-      kioskId,
+      kioskId: kioskId || 'auto-assign',
       clientIp,
       userAgent,
     });
@@ -135,20 +135,34 @@ export class SessionController {
           : null,
         printJob: printJob
           ? {
-              id: printJob.id,
+              jobId: printJob.id,
               status: printJob.status,
-              settings: printJob.settings,
-              totalAmount: printJob.total_amount,
+              settings: {
+                colorMode: printJob.color_mode,
+                copies: printJob.copies,
+                pageRange: printJob.page_range,
+                customRange: printJob.custom_range || undefined,
+                printSides: printJob.print_sides,
+                paperSize: printJob.paper_size,
+                orientation: printJob.orientation,
+              },
+              pricing: {
+                pricePerPage: parseFloat(printJob.base_price_per_page),
+                totalPages: printJob.total_pages,
+                totalAmount: parseFloat(printJob.total_amount),
+              },
               createdAt: printJob.created_at,
+              queuedAt: printJob.queued_at,
+              completedAt: printJob.completed_at,
             }
           : null,
         payment: payment
           ? {
               transactionId: payment.transaction_id,
               status: payment.status,
-              amount: payment.amount,
-              method: payment.method,
-              paidAt: payment.paid_at,
+              amount: parseFloat(payment.amount),
+              method: payment.payment_method,
+              paidAt: payment.completed_at,
             }
           : null,
       },

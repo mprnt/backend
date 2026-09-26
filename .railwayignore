@@ -1,0 +1,67 @@
+# Railway Deployment - Exclude unnecessary files
+
+# Environment & Config
+.env
+.env.local
+.env.*.local
+*.example
+
+# Development
+node_modules/
+.git/
+.gitignore
+.eslintrc.json
+.prettierrc.json
+tsconfig.json
+jest.config.js
+nodemon.json
+
+# Documentation (keep API docs, remove setup guides)
+SETUP.md
+CONTRIBUTING.md
+*.todo
+.claude/
+
+# Raspberry Pi Client (separate deployment)
+pi_client/
+pi_client/**
+
+# Testing
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
+.nyc_output/
+
+# Build & Logs
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local development
+migrations/ (use deployed DB)
+scripts/
+tmp/
+temp/
+local/
+
+# Husky
+.husky/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Database files (use Railway PostgreSQL)
+*.db
+*.sqlite
+.pgdata/

@@ -65,6 +65,10 @@ const swaggerOptions: swaggerJsdoc.Options = {
         description: 'Payment processing (Mock/Razorpay)',
       },
       {
+        name: 'Print Queue',
+        description: 'Print queue management and Raspberry Pi integration',
+      },
+      {
         name: 'Health',
         description: 'System health check',
       },
@@ -257,6 +261,10 @@ const swaggerOptions: swaggerJsdoc.Options = {
         PaymentOrder: {
           type: 'object',
           properties: {
+            keyId: {
+              type: 'string',
+              example: 'rzp_test_1234567890',
+            },
             orderId: {
               type: 'string',
               example: 'order_mock_1727235636304_abc123',
@@ -268,6 +276,10 @@ const swaggerOptions: swaggerJsdoc.Options = {
             currency: {
               type: 'string',
               example: 'INR',
+            },
+            jobId: {
+              type: 'string',
+              example: 'job_1234567890',
             },
             status: {
               type: 'string',
@@ -290,10 +302,14 @@ const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 export const setupSwagger = (app: Application): void => {
   // Swagger UI
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-    customCss: '.swagger-ui .topbar { display: none }',
-    customSiteTitle: 'MPrnt API Documentation',
-  }));
+  app.use(
+    '/api-docs',
+    swaggerUi.serve,
+    swaggerUi.setup(swaggerSpec, {
+      customCss: '.swagger-ui .topbar { display: none }',
+      customSiteTitle: 'MPrnt API Documentation',
+    })
+  );
 
   // Swagger JSON
   app.get('/api-docs.json', (_req, res) => {

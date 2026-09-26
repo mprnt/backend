@@ -28,6 +28,9 @@ ALTER TABLE payment_orders
 DROP CONSTRAINT IF EXISTS payment_orders_job_id_fkey;
 
 ALTER TABLE payment_orders
+DROP CONSTRAINT IF EXISTS fk_job;
+
+ALTER TABLE payment_orders
 ADD CONSTRAINT payment_orders_job_id_fkey
 FOREIGN KEY (job_id)
 REFERENCES print_jobs(id)

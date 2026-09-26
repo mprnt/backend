@@ -58,6 +58,16 @@ export async function processSessionExpiry(_job: Job): Promise<{
               s3Keys: documents.map((d: any) => d.s3_key),
             });
 
+            // Remove payment orders before document deletion for databases created
+            // with the legacy duplicate foreign key constraint.
+            await client.query(
+              `DELETE FROM payment_orders
+               WHERE job_id IN (
+                 SELECT id FROM print_jobs WHERE document_id = ANY($1::uuid[])
+               )`,
+              [documents.map((document: any) => document.id)]
+            );
+
             // Mark documents as deleted in database
             await client.query(
               'DELETE FROM documents WHERE session_id = $1',

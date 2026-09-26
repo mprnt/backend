@@ -91,13 +91,12 @@ router.get(
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - kioskId
  *             properties:
  *               kioskId:
  *                 type: string
  *                 format: uuid
- *                 example: 550e8400-e29b-41d4-a716-446655440000
+ *                 description: Kiosk ID (e.g., M001). If omitted, a kiosk will be auto-assigned.
+ *                 example: M001
  *     responses:
  *       201:
  *         description: Session created successfully
@@ -113,7 +112,29 @@ router.get(
  *                   type: string
  *                   example: Session created successfully
  *                 data:
- *                   $ref: '#/components/schemas/Session'
+ *                   type: object
+ *                   properties:
+ *                     sessionId:
+ *                       type: string
+ *                     expiresAt:
+ *                       type: string
+ *                       format: date-time
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *                     status:
+ *                       type: string
+ *                     kioskInfo:
+ *                       type: object
+ *                       properties:
+ *                         kioskId:
+ *                           type: string
+ *                         location:
+ *                           type: string
+ *                         capabilities:
+ *                           type: object
+ *                         status:
+ *                           type: string
  *       400:
  *         description: Validation error
  *         content:

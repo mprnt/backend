@@ -8,14 +8,18 @@ import {
   VerifyPaymentParams,
   IPaymentService,
 } from '../types/payment';
-import { mockPaymentService } from './mockPaymentService';
 import logger from '../utils/logger';
-// import env from '../config/env';
+import { RazorpayService } from './razorpayService';
+import { websocketService } from './websocketService';
 
 /**
  * Payment Service
  * Handles payment order creation, verification, and tracking
- * Delegates actual payment processing to mock or real payment gateway
+ * Delegates actual payment processing to RazorpayService.
+ *
+ * Test mode: Set RAZORPAY_KEY_ID=rzp_test_* to use Razorpay's test environment.
+ * Live mode: Set RAZORPAY_KEY_ID=rzp_live_* to use real payments.
+ * The same service handles both — no separate mock needed.
  */
 export class PaymentService {
   private paymentGateway: IPaymentService;
@@ -24,9 +28,7 @@ export class PaymentService {
     private database: Database = db,
     gateway?: IPaymentService
   ) {
-    // Use provided gateway or default to mock service
-    // In production, this would be RazorpayService when USE_MOCK_PAYMENT=false
-    this.paymentGateway = gateway || mockPaymentService;
+    this.paymentGateway = gateway || new RazorpayService();
   }
 
   /**
@@ -42,7 +44,12 @@ export class PaymentService {
       await client.query('BEGIN');
 
       // 1. Verify print job exists and is in pending status
-      const jobResult = await client.query(
+      const jobResult = await client.query<{
+        id: string;
+        total_amount: string;
+        status: string;
+        payment_status: string;
+      }>(
         `SELECT id, total_amount, status, payment_status
          FROM print_jobs
          WHERE id = $1`,
@@ -56,10 +63,7 @@ export class PaymentService {
       const job = jobResult.rows[0];
 
       if (job.status !== 'pending') {
-        throw new AppError(
-          `Cannot create payment for job with status: ${job.status}`,
-          400
-        );
+        throw new AppError(`Cannot create payment for job with status: ${job.status}`, 400);
       }
 
       if (job.payment_status === 'paid') {
@@ -67,10 +71,10 @@ export class PaymentService {
       }
 
       // 2. Check if order already exists for this job
-      const existingOrderResult = await client.query(
-        `SELECT order_id, status FROM payment_orders WHERE job_id = $1`,
-        [params.jobId]
-      );
+      const existingOrderResult = await client.query<{
+        order_id: string;
+        status: string;
+      }>(`SELECT order_id, status FROM payment_orders WHERE job_id = $1`, [params.jobId]);
 
       if (existingOrderResult.rows.length > 0) {
         const existingOrder = existingOrderResult.rows[0];
@@ -131,7 +135,15 @@ export class PaymentService {
       await client.query('BEGIN');
 
       // 1. Get payment order
-      const orderResult = await client.query(
+      const orderResult = await client.query<{
+        id: string;
+        job_id: string;
+        order_id: string;
+        amount: number | string;
+        currency: string;
+        status: string;
+        created_at: Date;
+      }>(
         `SELECT po.*, pj.id as job_id
          FROM payment_orders po
          JOIN print_jobs pj ON po.job_id = pj.id
@@ -190,7 +202,7 @@ export class PaymentService {
         id: transactionId,
         orderId: params.orderId,
         paymentId: params.paymentId,
-        amount: order.amount,
+        amount: Number(order.amount),
         currency: order.currency,
         method: 'mock',
         status: 'captured',
@@ -202,6 +214,12 @@ export class PaymentService {
         orderId: params.orderId,
         paymentId: params.paymentId,
         jobId: order.job_id,
+      });
+
+      // Broadcast job status update via WebSocket
+      websocketService.broadcastJobStatus(order.job_id, 'queued', {
+        paymentVerified: true,
+        paidAt: new Date().toISOString(),
       });
 
       return {
@@ -221,10 +239,14 @@ export class PaymentService {
    * Get payment order details
    */
   async getPaymentOrder(orderId: string): Promise<PaymentOrder | null> {
-    const result = await this.database.query(
-      `SELECT * FROM payment_orders WHERE order_id = $1`,
-      [orderId]
-    );
+    const result = await this.database.query<{
+      id: string;
+      order_id: string;
+      amount: string;
+      currency: string;
+      status: string;
+      created_at: Date;
+    }>(`SELECT * FROM payment_orders WHERE order_id = $1`, [orderId]);
 
     if (result.rows.length === 0) {
       return null;
@@ -236,7 +258,7 @@ export class PaymentService {
       orderId: row.order_id,
       amount: parseFloat(row.amount),
       currency: row.currency,
-      status: row.status,
+      status: row.status as PaymentOrder['status'],
       createdAt: row.created_at,
     };
   }
@@ -245,10 +267,14 @@ export class PaymentService {
    * Get payment order for a job
    */
   async getJobPaymentOrder(jobId: string): Promise<PaymentOrder | null> {
-    const result = await this.database.query(
-      `SELECT * FROM payment_orders WHERE job_id = $1 ORDER BY created_at DESC LIMIT 1`,
-      [jobId]
-    );
+    const result = await this.database.query<{
+      id: string;
+      order_id: string;
+      amount: string;
+      currency: string;
+      status: string;
+      created_at: Date;
+    }>(`SELECT * FROM payment_orders WHERE job_id = $1 ORDER BY created_at DESC LIMIT 1`, [jobId]);
 
     if (result.rows.length === 0) {
       return null;
@@ -260,7 +286,7 @@ export class PaymentService {
       orderId: row.order_id,
       amount: parseFloat(row.amount),
       currency: row.currency,
-      status: row.status,
+      status: row.status as PaymentOrder['status'],
       createdAt: row.created_at,
     };
   }
@@ -285,7 +311,7 @@ export class PaymentService {
       );
 
       // Get job ID
-      const orderResult = await client.query(
+      const orderResult = await client.query<{ job_id: string }>(
         `SELECT job_id FROM payment_orders WHERE order_id = $1`,
         [orderId]
       );

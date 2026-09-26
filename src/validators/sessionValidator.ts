@@ -1,10 +1,10 @@
 import Joi from 'joi';
 
 // POST /api/v1/sessions - Create new session
+// kioskId is optional — if not provided, the system auto-assigns the first available kiosk
 export const createSessionSchema = Joi.object({
-  kioskId: Joi.string().required().messages({
-    'string.empty': 'Kiosk ID is required',
-    'any.required': 'Kiosk ID is required',
+  kioskId: Joi.string().optional().messages({
+    'string.empty': 'Kiosk ID is required if provided',
   }),
 });
 

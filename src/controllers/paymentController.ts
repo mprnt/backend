@@ -1,8 +1,12 @@
 import { Request, Response } from 'express';
+import env from '../config/environment';
 import { paymentService } from '../services/paymentService';
-import { mockPaymentService } from '../services/mockPaymentService';
+import { RazorpayService } from '../services/razorpayService';
 import { AppError } from '../utils/errors';
 import logger from '../utils/logger';
+
+// For simulation endpoints — uses the same RazorpayService with in-memory store
+const razorpayService = paymentService['paymentGateway'] as unknown as RazorpayService;
 
 class PaymentController {
   /**
@@ -15,10 +19,9 @@ class PaymentController {
     logger.info('Creating payment order', { jobId });
 
     // Get job details to determine amount
-    const jobResult = await paymentService['database'].query(
-      `SELECT total_amount FROM print_jobs WHERE id = $1`,
-      [jobId]
-    );
+    const jobResult = await paymentService['database'].query<{
+      total_amount: string;
+    }>(`SELECT total_amount FROM print_jobs WHERE id = $1`, [jobId]);
 
     if (jobResult.rows.length === 0) {
       throw new AppError('Print job not found', 404);
@@ -36,6 +39,7 @@ class PaymentController {
       status: 'success',
       message: 'Payment order created successfully',
       data: {
+        keyId: env.payment.razorpay_key_id,
         orderId: order.orderId,
         amount: order.amount,
         currency: order.currency,
@@ -51,7 +55,11 @@ class PaymentController {
    * Verify payment and capture
    */
   async verifyPayment(req: Request, res: Response): Promise<void> {
-    const { orderId, paymentId, signature } = req.body;
+    const { orderId, paymentId, signature } = req.body as {
+      orderId: string;
+      paymentId: string;
+      signature: string;
+    };
 
     logger.info('Verifying payment', { orderId, paymentId });
 
@@ -132,15 +140,44 @@ class PaymentController {
   }
 
   /**
+   * GET /api/v1/payment/order/:orderId/status
+   * Poll payment status — useful for async payment flows (UPI, netbanking)
+   * where the user returns to the app after completing payment externally.
+   */
+  async getPaymentStatus(req: Request, res: Response): Promise<void> {
+    const { orderId } = req.params;
+
+    logger.info('Polling payment status', { orderId });
+
+    const order = await paymentService.getPaymentOrder(orderId);
+
+    if (!order) {
+      throw new AppError('Payment order not found', 404);
+    }
+
+    res.json({
+      status: 'success',
+      data: {
+        orderId: order.orderId,
+        amount: order.amount,
+        currency: order.currency,
+        status: order.status,
+        createdAt: order.createdAt,
+        isPaid: order.status === 'captured',
+      },
+    });
+  }
+
+  /**
    * POST /api/v1/payment/mock/simulate-success
    * Simulate successful payment (mock only)
    */
   async simulateSuccess(req: Request, res: Response): Promise<void> {
-    const { orderId } = req.body;
+    const { orderId } = req.body as { orderId: string };
 
     logger.info('Simulating payment success', { orderId });
 
-    const { paymentId, signature } = await mockPaymentService.simulatePaymentSuccess(orderId);
+    const { paymentId, signature } = await razorpayService.simulatePaymentSuccess(orderId);
 
     res.json({
       status: 'success',
@@ -159,11 +196,11 @@ class PaymentController {
    * Simulate payment failure (mock only)
    */
   async simulateFailure(req: Request, res: Response): Promise<void> {
-    const { orderId, errorCode } = req.body;
+    const { orderId, errorCode } = req.body as { orderId: string; errorCode?: string };
 
     logger.info('Simulating payment failure', { orderId, errorCode });
 
-    await mockPaymentService.simulatePaymentFailure(orderId, errorCode);
+    await razorpayService.simulatePaymentFailure(orderId, errorCode);
 
     await paymentService.handlePaymentFailure(
       orderId,
@@ -186,7 +223,11 @@ class PaymentController {
    * Handle payment failure webhook
    */
   async handleFailure(req: Request, res: Response): Promise<void> {
-    const { orderId, errorCode, errorDescription } = req.body;
+    const { orderId, errorCode, errorDescription } = req.body as {
+      orderId: string;
+      errorCode: string;
+      errorDescription: string;
+    };
 
     logger.info('Handling payment failure', { orderId, errorCode });
 

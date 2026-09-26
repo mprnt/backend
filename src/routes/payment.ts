@@ -230,6 +230,64 @@ router.post(
 
 /**
  * @swagger
+ * /payment/order/{orderId}/status:
+ *   get:
+ *     summary: Poll payment status
+ *     description: |
+ *       Check if a payment has been completed.
+ *
+ *       Useful for asynchronous payment methods (UPI, netbanking) where the
+ *       user completes the payment outside your app and returns.
+ *
+ *       Polling this endpoint lets the frontend know when to proceed to
+ *       document upload or print job queue.
+ *     tags: [Payment]
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Payment order ID
+ *     responses:
+ *       200:
+ *         description: Payment status retrieved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: success
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     orderId:
+ *                       type: string
+ *                     amount:
+ *                       type: number
+ *                     currency:
+ *                       type: string
+ *                     status:
+ *                       type: string
+ *                       enum: [created, authorized, captured, failed, refunded]
+ *                     isPaid:
+ *                       type: boolean
+ *                       example: false
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *       404:
+ *         description: Payment order not found
+ */
+router.get(
+  '/payment/order/:orderId/status',
+  asyncHandler(paymentController.getPaymentStatus.bind(paymentController))
+);
+
+/**
+ * @swagger
  * /payment/mock/simulate-success:
  *   post:
  *     summary: Simulate payment success (Mock only)

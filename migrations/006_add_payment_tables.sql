@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS payment_orders (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fk_job FOREIGN KEY (job_id) REFERENCES print_jobs(id)
+    CONSTRAINT fk_job FOREIGN KEY (job_id) REFERENCES print_jobs(id) ON DELETE CASCADE
 );
 
 -- Payment Transactions Table
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fk_order FOREIGN KEY (order_id) REFERENCES payment_orders(order_id)
+    CONSTRAINT fk_order FOREIGN KEY (order_id) REFERENCES payment_orders(order_id) ON DELETE CASCADE
 );
 
 -- Add payment tracking to print_jobs

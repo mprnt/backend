@@ -2,7 +2,9 @@ import app from './app';
 import env from './config/environment';
 import logger from './utils/logger';
 import { scheduleSessionExpiryJob } from './jobs/sessionExpiryJob';
+import { scheduleJobAssignmentJob } from './jobs/jobAssignmentJob';
 import { sessionExpiryQueue } from './queues/sessionExpiryQueue';
+import { websocketService } from './services/websocketService';
 
 const PORT = env.port;
 
@@ -12,8 +14,13 @@ const server = app.listen(PORT, 'localhost', () => {
   logger.info(`🔗 API Version: ${env.api_version}`);
   logger.info(`🏥 Health check: http://localhost:${PORT}/health`);
 
+  // Initialize WebSocket
+  websocketService.initialize(server, env.websocket.path);
+  logger.info(`📡 WebSocket server initialized on ${env.websocket.path}`);
+
   // Start background jobs
   scheduleSessionExpiryJob();
+  scheduleJobAssignmentJob();
   logger.info('⏰ Background jobs started');
 });
 

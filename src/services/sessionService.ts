@@ -6,10 +6,15 @@ import logger from '../utils/logger';
 export class SessionService {
   /**
    * Generate unique session ID
-   * Format: S{timestamp}
+   * Format: S{timestamp}{random suffix}, max 20 characters
    */
   private generateSessionId(): string {
-    return `S${Date.now()}`;
+    const timestamp = Date.now().toString();
+    const randomSuffix = Math.floor(Math.random() * 1_000_000)
+      .toString()
+      .padStart(6, '0');
+
+    return `S${timestamp}${randomSuffix}`;
   }
 
   /**
@@ -33,24 +38,51 @@ export class SessionService {
   }
 
   /**
+   * Get the first available active kiosk (for auto-assignment)
+   */
+  async getAutoAssignKiosk(): Promise<Kiosk | null> {
+    const result = await db.query<Kiosk>(
+      `SELECT * FROM kiosks
+       WHERE status = 'active' AND printer_status = 'idle'
+       ORDER BY id
+       LIMIT 1`
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
    * Create a new print session
    */
   async createSession(
-    kioskId: string,
+    kioskId?: string,
     clientIp?: string,
     userAgent?: string
   ): Promise<{ session: PrintSession; kiosk: Kiosk }> {
-    // Validate kiosk exists and is active
-    const kiosk = await this.getKioskByKioskId(kioskId);
+    let kiosk: Kiosk | null;
 
-    if (!kiosk) {
-      logger.warn('Kiosk not found', { kioskId });
-      throw new AppError('Kiosk not found', 404);
-    }
+    if (kioskId) {
+      // Validate kiosk exists and is active
+      kiosk = await this.getKioskByKioskId(kioskId);
 
-    if (kiosk.status !== 'active') {
-      logger.warn('Kiosk is not active', { kioskId, status: kiosk.status });
-      throw new AppError(`Kiosk is currently ${kiosk.status}. Please try another kiosk.`, 400);
+      if (!kiosk) {
+        logger.warn('Kiosk not found', { kioskId });
+        throw new AppError('Kiosk not found', 404);
+      }
+
+      if (kiosk.status !== 'active') {
+        logger.warn('Kiosk is not active', { kioskId, status: kiosk.status });
+        throw new AppError(`Kiosk is currently ${kiosk.status}. Please try another kiosk.`, 400);
+      }
+    } else {
+      // Auto-assign the first available active kiosk
+      kiosk = await this.getAutoAssignKiosk();
+
+      if (!kiosk) {
+        logger.warn('No available kiosks for auto-assignment');
+        throw new AppError('No active kiosks available. Please specify a kiosk ID.', 400);
+      }
+
+      logger.info('Auto-assigned kiosk', { kioskId: kiosk.kiosk_id });
     }
 
     // Generate session ID and expiry
