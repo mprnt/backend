@@ -353,4 +353,18 @@ export class PaymentService {
   }
 }
 
-export const paymentService = new PaymentService();
+let instance: PaymentService | null = null;
+
+export const getPaymentService = (): PaymentService => {
+  if (!instance) {
+    instance = new PaymentService();
+  }
+  return instance;
+};
+
+export const paymentService = new Proxy({} as PaymentService, {
+  get: (_target, prop) => {
+    const service = getPaymentService();
+    return (service as any)[prop];
+  },
+});
