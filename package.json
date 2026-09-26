@@ -11,6 +11,7 @@
     "start:worker": "node dist/workers/index.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
+    "lint-staged": "lint-staged",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",

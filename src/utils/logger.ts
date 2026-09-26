@@ -12,7 +12,7 @@ const consoleFormat = winston.format.combine(
   winston.format.colorize(),
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.printf(({ timestamp, level, message, ...meta }) => {
-    let msg = `${timestamp} [${level}]: ${message}`;
+    let msg = `${String(timestamp)} [${String(level)}]: ${String(message)}`;
     if (Object.keys(meta).length > 0) {
       msg += ` ${JSON.stringify(meta)}`;
     }
@@ -24,6 +24,9 @@ const logger = winston.createLogger({
   level: env.logging.level,
   format: logFormat,
   transports: [
+    new winston.transports.Console({
+      format: env.logging.pretty_logs ? consoleFormat : logFormat,
+    }),
     new winston.transports.File({
       filename: 'logs/error.log',
       level: 'error',
@@ -37,13 +40,5 @@ const logger = winston.createLogger({
     }),
   ],
 });
-
-if (env.node_env !== 'production') {
-  logger.add(
-    new winston.transports.Console({
-      format: env.logging.pretty_logs ? consoleFormat : logFormat,
-    })
-  );
-}
 
 export default logger;
