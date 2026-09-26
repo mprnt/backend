@@ -8,7 +8,7 @@ import { websocketService } from './services/websocketService';
 
 const PORT = env.port;
 
-const server = app.listen(PORT, 'localhost', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📍 Environment: ${env.node_env}`);
   logger.info(`🔗 API Version: ${env.api_version}`);
