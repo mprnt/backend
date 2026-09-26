@@ -3,18 +3,18 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files and tsconfig
+COPY package*.json tsconfig.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci && \
     npm cache clean --force
 
 # Copy source code
-COPY . .
+COPY src ./src
 
 # Build TypeScript
-RUN npm run build
+RUN npx tsc --project tsconfig.json
 
 # Stage 2: Production
 FROM node:20-alpine

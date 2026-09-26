@@ -54,7 +54,6 @@ tests
 .eslintignore
 nodemon.json
 jest.config.js
-tsconfig.json
 
 # CI/CD
 .github
