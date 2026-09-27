@@ -1,12 +1,16 @@
 import { Request, Response } from 'express';
 import env from '../config/environment';
-import { paymentService } from '../services/paymentService';
+import { getPaymentService, paymentService } from '../services/paymentService';
 import { RazorpayService } from '../services/razorpayService';
 import { AppError } from '../utils/errors';
 import logger from '../utils/logger';
 
-// For simulation endpoints — uses the same RazorpayService with in-memory store
-const razorpayService = paymentService['paymentGateway'] as unknown as RazorpayService;
+function getRazorpayService(): RazorpayService {
+  const service = getPaymentService() as unknown as {
+    getGateway: () => RazorpayService;
+  };
+  return service.getGateway();
+}
 
 class PaymentController {
   /**
@@ -177,7 +181,7 @@ class PaymentController {
 
     logger.info('Simulating payment success', { orderId });
 
-    const { paymentId, signature } = await razorpayService.simulatePaymentSuccess(orderId);
+    const { paymentId, signature } = await getRazorpayService().simulatePaymentSuccess(orderId);
 
     res.json({
       status: 'success',
@@ -200,7 +204,7 @@ class PaymentController {
 
     logger.info('Simulating payment failure', { orderId, errorCode });
 
-    await razorpayService.simulatePaymentFailure(orderId, errorCode);
+    await getRazorpayService().simulatePaymentFailure(orderId, errorCode);
 
     await paymentService.handlePaymentFailure(
       orderId,

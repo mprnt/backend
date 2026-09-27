@@ -365,6 +365,12 @@ export const getPaymentService = (): PaymentService => {
 export const paymentService = new Proxy({} as PaymentService, {
   get: (_target, prop) => {
     const service = getPaymentService();
-    return (service as any)[prop];
+    const value = Reflect.get(service, prop, service) as unknown;
+
+    if (typeof value === 'function') {
+      return (value as (...args: unknown[]) => unknown).bind(service);
+    }
+
+    return value;
   },
 });
