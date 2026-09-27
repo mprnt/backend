@@ -4,6 +4,8 @@ import logger from './utils/logger';
 import { scheduleSessionExpiryJob } from './jobs/sessionExpiryJob';
 import { scheduleJobAssignmentJob } from './jobs/jobAssignmentJob';
 import { sessionExpiryQueue } from './queues/sessionExpiryQueue';
+import { documentQueue } from './queues/documentQueue';
+import { documentProcessor } from './workers/documentProcessor';
 import { websocketService } from './services/websocketService';
 
 const PORT = env.port;
@@ -17,6 +19,12 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   // Initialize WebSocket
   websocketService.initialize(server, env.websocket.path);
   logger.info(`📡 WebSocket server initialized on ${env.websocket.path}`);
+
+  // Process document jobs in this process so uploads do not wait on a separate worker
+  void documentQueue.process(async (job) => {
+    return documentProcessor.process(job);
+  });
+  logger.info('📄 Document processing worker attached to API process');
 
   // Start background jobs
   scheduleSessionExpiryJob();
@@ -51,8 +59,12 @@ const gracefulShutdown = async (signal: string) => {
   }, 10000);
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => {
+  void gracefulShutdown('SIGTERM');
+});
+process.on('SIGINT', () => {
+  void gracefulShutdown('SIGINT');
+});
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason: Error) => {

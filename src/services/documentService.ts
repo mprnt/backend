@@ -67,10 +67,9 @@ export class DocumentService {
     }
 
     // Check if document already exists for this session
-    const existingDoc = await db.query(
-      'SELECT id FROM documents WHERE session_id = $1',
-      [session.id]
-    );
+    const existingDoc = await db.query('SELECT id FROM documents WHERE session_id = $1', [
+      session.id,
+    ]);
 
     if (existingDoc.rows.length > 0) {
       throw new AppError('Document already uploaded for this session', 400);
@@ -96,6 +95,8 @@ export class DocumentService {
       // Store document metadata in database
       const documentId = crypto.randomUUID();
 
+      const isProcessed = pageCount !== null;
+
       const result = await db.query<Document>(
         `INSERT INTO documents
          (id, session_id, original_filename, file_type, file_size_bytes, s3_key, page_count, processed, uploaded_at)
@@ -109,7 +110,7 @@ export class DocumentService {
           file.size,
           s3Key,
           pageCount,
-          false, // Not processed yet
+          isProcessed,
         ]
       );
 
@@ -120,20 +121,27 @@ export class DocumentService {
         sessionId,
         s3Key,
         pageCount,
+        processed: isProcessed,
       });
 
-      // Queue document for background processing
-      await addDocumentProcessingJob({
-        documentId: document.id,
-        sessionId,
-        s3Key,
-        fileType: file.mimetype,
-        originalFilename: file.originalname,
-      });
+      try {
+        await addDocumentProcessingJob({
+          documentId: document.id,
+          sessionId,
+          s3Key,
+          fileType: file.mimetype,
+          originalFilename: file.originalname,
+        });
 
-      logger.info('Document queued for processing', {
-        documentId: document.id,
-      });
+        logger.info('Document queued for processing', {
+          documentId: document.id,
+        });
+      } catch (queueError) {
+        logger.error('Failed to queue document processing job', {
+          documentId: document.id,
+          error: queueError instanceof Error ? queueError.message : queueError,
+        });
+      }
 
       return document;
     } catch (error) {
@@ -149,10 +157,7 @@ export class DocumentService {
    * Get document by ID
    */
   async getDocument(documentId: string): Promise<Document | null> {
-    const result = await db.query<Document>(
-      'SELECT * FROM documents WHERE id = $1',
-      [documentId]
-    );
+    const result = await db.query<Document>('SELECT * FROM documents WHERE id = $1', [documentId]);
 
     return result.rows[0] || null;
   }
@@ -167,10 +172,9 @@ export class DocumentService {
       return null;
     }
 
-    const result = await db.query<Document>(
-      'SELECT * FROM documents WHERE session_id = $1',
-      [session.id]
-    );
+    const result = await db.query<Document>('SELECT * FROM documents WHERE session_id = $1', [
+      session.id,
+    ]);
 
     return result.rows[0] || null;
   }
@@ -193,7 +197,7 @@ export class DocumentService {
       if (document.file_type.startsWith('image/')) {
         try {
           await storageService.deleteFile(`${document.s3_key}-thumb.jpg`);
-        } catch (error) {
+        } catch {
           // Thumbnail might not exist, ignore error
           logger.debug('Thumbnail deletion skipped (not found)', {
             documentId,
@@ -205,10 +209,7 @@ export class DocumentService {
       await db.query('DELETE FROM documents WHERE id = $1', [documentId]);
 
       // Invalidate cache
-      await cacheService.del([
-        CacheKeys.preview(documentId),
-        CacheKeys.document(documentId),
-      ]);
+      await cacheService.del([CacheKeys.preview(documentId), CacheKeys.document(documentId)]);
 
       logger.info('Document deleted', {
         documentId,
