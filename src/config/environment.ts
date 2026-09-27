@@ -22,6 +22,7 @@ interface Environment {
     port: number;
     password: string;
     db: number;
+    tls: boolean;
   };
   jwt: {
     secret: string;
@@ -72,6 +73,39 @@ interface Environment {
   };
 }
 
+function parseRedisFromEnv(): Environment['redis'] {
+  const url = process.env.REDIS_URL || process.env.QUEUE_REDIS_URL || 'redis://localhost:6379';
+  const fallbackHost = process.env.REDIS_HOST || 'localhost';
+  const fallbackPort = parseInt(process.env.REDIS_PORT || '6379', 10);
+  const fallbackPassword = process.env.REDIS_PASSWORD || '';
+  const db = parseInt(process.env.REDIS_DB || '0', 10);
+
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname || fallbackHost;
+    const port = parsed.port ? parseInt(parsed.port, 10) : fallbackPort;
+    const password = parsed.password ? decodeURIComponent(parsed.password) : fallbackPassword;
+
+    return {
+      url,
+      host,
+      port,
+      password,
+      db,
+      tls: parsed.protocol === 'rediss:',
+    };
+  } catch {
+    return {
+      url,
+      host: fallbackHost,
+      port: fallbackPort,
+      password: fallbackPassword,
+      db,
+      tls: false,
+    };
+  }
+}
+
 const env: Environment = {
   node_env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -86,13 +120,7 @@ const env: Environment = {
     pool_min: parseInt(process.env.DB_POOL_MIN || '2', 10),
     pool_max: parseInt(process.env.DB_POOL_MAX || '20', 10),
   },
-  redis: {
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    password: process.env.REDIS_PASSWORD || '',
-    db: parseInt(process.env.REDIS_DB || '0', 10),
-  },
+  redis: parseRedisFromEnv(),
   jwt: {
     secret: process.env.JWT_SECRET || 'change_this_secret',
     access_token_expiry: process.env.JWT_ACCESS_TOKEN_EXPIRY || '15m',

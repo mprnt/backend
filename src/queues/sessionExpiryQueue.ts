@@ -10,7 +10,11 @@ export const sessionExpiryQueue = new Queue('session-expiry', {
   redis: {
     host: env.redis.host,
     port: env.redis.port,
-    password: env.redis.password,
+    password: env.redis.password || undefined,
+    db: env.redis.db,
+    tls: env.redis.tls ? {} : undefined,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
   },
   defaultJobOptions: {
     attempts: 3,
@@ -27,7 +31,6 @@ export const sessionExpiryQueue = new Queue('session-expiry', {
 sessionExpiryQueue.on('completed', (job) => {
   logger.debug('Session expiry job completed', {
     jobId: job.id,
-    returnValue: job.returnvalue,
   });
 });
 
