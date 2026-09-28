@@ -3,20 +3,34 @@ import { AppError } from '../utils/errors';
 import {
   Printer,
   PrinterHeartbeat,
-  // QueuedJob,
   JobAssignment,
   PollQueueParams,
   UpdateJobStatusParams,
   PrinterCapabilities,
 } from '../types/queue';
+import env from '../config/environment';
 import logger from '../utils/logger';
 import { storageService } from './storageService';
+
+/**
+ * Terminal states. A job in one of these never moves again, which makes every
+ * status update from a printer safely idempotent.
+ */
+const TERMINAL_STATUSES = ['completed', 'cancelled'];
 
 export class QueueService {
   constructor(private database: Database = db) {}
 
+  // -------------------------------------------------------------------------
+  // Printer lifecycle
+  // -------------------------------------------------------------------------
+
   /**
-   * Register or update a printer
+   * Register or update a printer.
+   *
+   * Enrollment (first registration) is guarded by the provisioning token at the
+   * route layer; re-registration is authenticated with the printer's own key and
+   * only refreshes mutable fields. Credentials are never touched here.
    */
   async registerPrinter(params: {
     printerId: string;
@@ -25,6 +39,14 @@ export class QueueService {
     capabilities: PrinterCapabilities;
     ipAddress?: string;
   }): Promise<Printer> {
+    // kiosk_id is a FK to kiosks(id); fail loudly rather than with a raw PG error.
+    const kiosk = await this.database.query(`SELECT id FROM kiosks WHERE id = $1`, [
+      params.kioskId,
+    ]);
+    if (kiosk.rows.length === 0) {
+      throw new AppError(`Kiosk ${params.kioskId} does not exist`, 400);
+    }
+
     const result = await this.database.query(
       `INSERT INTO printers (
         printer_id, kiosk_id, name, ip_address,
@@ -50,6 +72,7 @@ export class QueueService {
         params.capabilities.supportsColor,
         params.capabilities.supportsDoubleSided,
         params.capabilities.maxCopies,
+        // supported_paper_sizes is a TEXT[]; pg maps a JS array onto it directly.
         params.capabilities.supportedPaperSizes,
       ]
     );
@@ -63,7 +86,7 @@ export class QueueService {
   }
 
   /**
-   * Update printer heartbeat
+   * Record a heartbeat and append to the heartbeat log.
    */
   async updateHeartbeat(heartbeat: PrinterHeartbeat): Promise<void> {
     const client = await this.database.getClient();
@@ -71,32 +94,33 @@ export class QueueService {
     try {
       await client.query('BEGIN');
 
-      // Update printer status
-      await client.query(
+      const printerResult = await client.query(
         `UPDATE printers SET
           status = $1,
           last_heartbeat = NOW(),
           updated_at = NOW()
-         WHERE printer_id = $2`,
+         WHERE printer_id = $2
+         RETURNING id`,
         [heartbeat.status, heartbeat.printerId]
       );
 
-      // Log heartbeat
+      if (printerResult.rows.length === 0) {
+        throw new AppError('Printer not registered', 404);
+      }
+
       await client.query(
         `INSERT INTO printer_heartbeats (
           printer_id, status, current_job_id, error_message,
           paper_level, ink_level_black, ink_level_color, received_at
-        )
-        SELECT id, $2, $3, $4, $5, $6, $7, NOW()
-        FROM printers WHERE printer_id = $1`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
         [
-          heartbeat.printerId,
+          printerResult.rows[0].id,
           heartbeat.status,
-          heartbeat.currentJobId,
-          heartbeat.errorMessage,
-          heartbeat.paperLevel,
-          heartbeat.inkLevel?.black,
-          heartbeat.inkLevel?.color,
+          heartbeat.currentJobId ?? null,
+          heartbeat.errorMessage ?? null,
+          heartbeat.paperLevel ?? null,
+          heartbeat.inkLevel?.black ?? null,
+          heartbeat.inkLevel?.color ?? null,
         ]
       );
 
@@ -108,222 +132,362 @@ export class QueueService {
       });
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error updating heartbeat', { error, heartbeat });
+      logger.error('Error updating heartbeat', { error, printerId: heartbeat.printerId });
       throw error;
     } finally {
       client.release();
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Queue entry
+  // -------------------------------------------------------------------------
+
   /**
-   * Poll for next available job
-   * Raspberry Pi calls this to get work
+   * Put a paid job into the print queue.
+   *
+   * Called inside the payment transaction so a job becomes payable and printable
+   * atomically — there is no window where money is captured but no queue row exists.
+   * `ON CONFLICT DO NOTHING` makes a replayed payment webhook harmless.
    */
-  async pollQueue(params: PollQueueParams): Promise<JobAssignment | null> {
+  async enqueueJob(
+    jobId: string,
+    priority = 0,
+    client?: { query: (text: string, params?: any[]) => Promise<unknown> }
+  ): Promise<void> {
+    const exec = client ?? this.database;
+
+    await exec.query(
+      `INSERT INTO print_queue (job_id, status, priority, queued_at, created_at, updated_at)
+       VALUES ($1, 'queued', $2, NOW(), NOW(), NOW())
+       ON CONFLICT (job_id) DO NOTHING`,
+      [jobId, priority]
+    );
+
+    logger.info('Job enqueued for printing', { jobId, priority });
+  }
+
+  // -------------------------------------------------------------------------
+  // Polling
+  // -------------------------------------------------------------------------
+
+  /**
+   * Claim the next job for a printer.
+   *
+   * Pull model: the printer asks for work and atomically claims one row via
+   * `FOR UPDATE SKIP LOCKED`, so two printers polling concurrently can never be
+   * handed the same job. The claim carries a lease; if the Pi dies mid-print the
+   * reaper returns the job to the queue.
+   *
+   * @param printerUuid internal printers.id, taken from the authenticated
+   *                    credentials — never from the request body.
+   */
+  async pollQueue(
+    params: PollQueueParams & { printerUuid: string }
+  ): Promise<JobAssignment | null> {
     const client = await this.database.getClient();
 
     try {
       await client.query('BEGIN');
 
-      // Get printer ID
-      const printerResult = await client.query(`SELECT id FROM printers WHERE printer_id = $1`, [
-        params.printerId,
-      ]);
+      // Capabilities are read from the database, not from the request body: a
+      // compromised or buggy Pi must not be able to claim a colour job by
+      // claiming colour support it does not have.
+      const printerResult = await client.query(
+        `SELECT id, kiosk_id, status, supports_color, supports_double_sided, max_copies
+           FROM printers
+          WHERE id = $1 AND revoked_at IS NULL`,
+        [params.printerUuid]
+      );
 
       if (printerResult.rows.length === 0) {
         throw new AppError('Printer not registered', 404);
       }
 
-      const printerId = printerResult.rows[0].id;
+      const printer = printerResult.rows[0];
 
-      // Find next job in queue matching printer capabilities
+      if (printer.status === 'maintenance') {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      // A printer may hold only one job at a time. If it already has one
+      // (e.g. it restarted mid-print), hand the same job back rather than a new one.
+      const inFlight = await client.query(
+        `SELECT pq.job_id
+           FROM print_queue pq
+          WHERE pq.printer_id = $1
+            AND pq.status IN ('assigned', 'printing')
+          LIMIT 1`,
+        [printer.id]
+      );
+
+      const jobFilter = inFlight.rows.length > 0 ? 'pq.job_id = $4' : `pq.status = 'queued'`;
+
       const jobResult = await client.query(
-        `SELECT pq.*, pj.*, d.s3_key, d.file_name
-         FROM print_queue pq
-         JOIN print_jobs pj ON pq.job_id = pj.id
-         JOIN documents d ON pj.document_id = d.id
-         WHERE pq.status = 'queued'
-           AND pq.retry_count < pq.max_retries
-           AND (
-             pj.color_mode = 'bw'
-             OR (pj.color_mode = 'color' AND $2 = true)
-           )
-           AND (
-             pj.print_sides = 'single'
-             OR (pj.print_sides = 'double' AND $3 = true)
-           )
-         ORDER BY pq.priority DESC, pq.queued_at ASC
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED`,
-        [printerId, params.capabilities.supportsColor, params.capabilities.supportsDoubleSided]
+        `SELECT pq.job_id, pq.priority, pq.lease_count,
+                pj.color_mode, pj.copies, pj.page_range, pj.custom_range,
+                pj.print_sides, pj.paper_size, pj.orientation, pj.total_pages,
+                d.s3_key, d.original_filename, d.file_size_bytes, d.file_type
+           FROM print_queue pq
+           JOIN print_jobs pj ON pq.job_id = pj.id
+           JOIN documents  d  ON pj.document_id = d.id
+          WHERE ${jobFilter}
+            AND pj.kiosk_id = $1
+            AND pj.payment_status = 'paid'
+            AND pq.retry_count < pq.max_retries
+            AND (pj.color_mode <> 'color'  OR $2 = true)
+            AND (pj.print_sides <> 'double' OR $3 = true)
+          ORDER BY pq.priority DESC, pq.queued_at ASC
+          LIMIT 1
+          FOR UPDATE OF pq SKIP LOCKED`,
+        inFlight.rows.length > 0
+          ? [
+              printer.kiosk_id,
+              printer.supports_color,
+              printer.supports_double_sided,
+              inFlight.rows[0].job_id,
+            ]
+          : [printer.kiosk_id, printer.supports_color, printer.supports_double_sided]
       );
 
       if (jobResult.rows.length === 0) {
         await client.query('COMMIT');
-        return null; // No jobs available
+        return null;
       }
 
       const job = jobResult.rows[0];
 
-      // Assign job to printer
+      // Claim it: assign, stamp a lease, and count the lease for retry accounting.
       await client.query(
         `UPDATE print_queue SET
           printer_id = $1,
-          status = 'assigned',
-          assigned_at = NOW(),
+          -- A resumed job stays 'printing'; only a fresh claim becomes 'assigned'.
+          status = CASE WHEN status = 'printing' THEN 'printing' ELSE 'assigned' END,
+          assigned_at = COALESCE(assigned_at, NOW()),
+          lease_expires_at = NOW() + ($2 || ' seconds')::interval,
+          lease_count = lease_count + 1,
           updated_at = NOW()
-         WHERE job_id = $2`,
-        [printerId, job.job_id]
+         WHERE job_id = $3`,
+        [printer.id, String(env.printer.job_lease_seconds), job.job_id]
       );
 
-      // Update print job status
       await client.query(
         `UPDATE print_jobs SET
           status = 'printing',
-          started_printing_at = NOW()
+          started_printing_at = COALESCE(started_printing_at, NOW())
          WHERE id = $1`,
         [job.job_id]
       );
 
       await client.query('COMMIT');
 
-      // Generate pre-signed URL for document download
-      const documentUrl = await storageService.getPresignedUrl(job.s3_key, 3600);
+      // Pre-signed URL is generated after commit: it is not transactional state,
+      // and a rollback must not leave a live download link behind.
+      const documentUrl = await storageService.getPresignedUrl(
+        job.s3_key,
+        env.printer.document_url_ttl_seconds
+      );
 
       const assignment: JobAssignment = {
         jobId: job.job_id,
         documentUrl,
+        documentUrlExpiresAt: new Date(
+          Date.now() + env.printer.document_url_ttl_seconds * 1000
+        ).toISOString(),
+        fileName: job.original_filename,
+        fileSizeBytes: Number(job.file_size_bytes),
+        mimeType: job.file_type,
         settings: {
           colorMode: job.color_mode,
           copies: job.copies,
           pageRange: job.page_range,
-          customRange: job.custom_range,
+          customRange: job.custom_range ?? undefined,
           printSides: job.print_sides,
           paperSize: job.paper_size,
           orientation: job.orientation,
         },
         totalPages: job.total_pages,
         assignedAt: new Date(),
+        leaseExpiresAt: new Date(Date.now() + env.printer.job_lease_seconds * 1000).toISOString(),
+        attempt: job.lease_count + 1,
       };
 
-      logger.info('Job assigned to printer', {
+      logger.info('Job claimed by printer', {
         jobId: job.job_id,
         printerId: params.printerId,
+        attempt: assignment.attempt,
       });
 
       return assignment;
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error polling queue', { error, params });
+      logger.error('Error polling queue', { error, printerId: params.printerId });
       throw error;
     } finally {
       client.release();
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Status reporting
+  // -------------------------------------------------------------------------
+
   /**
-   * Update job status from Raspberry Pi
+   * Apply a status update reported by a printer.
+   *
+   * Guarantees:
+   *  - a printer may only update a job it currently holds (ownership check);
+   *  - a job already in a terminal state is left alone (idempotent retries);
+   *  - `printedPages` only ever moves forward, so out-of-order arrivals from a
+   *    retrying Pi cannot walk the progress bar backwards;
+   *  - `started_at` is stamped once, not on every `printing` message.
+   *
+   * @param printerUuid when present, the update is scoped to that printer.
+   *                    Omitted for internal/admin callers such as the reaper.
    */
-  async updateJobStatus(params: UpdateJobStatusParams): Promise<void> {
+  async updateJobStatus(
+    params: UpdateJobStatusParams & { printerUuid?: string }
+  ): Promise<{ applied: boolean; status: string }> {
     const client = await this.database.getClient();
 
     try {
       await client.query('BEGIN');
 
-      const now = new Date();
-
-      // Update queue status
-      const updates: string[] = ['status = $1', 'updated_at = NOW()'];
-      const values: any[] = [params.status];
-      let paramIndex = 2;
-
-      if (params.status === 'printing') {
-        updates.push(`started_at = $${paramIndex}`);
-        values.push(now);
-        paramIndex++;
-      } else if (params.status === 'completed') {
-        updates.push(`completed_at = $${paramIndex}`);
-        values.push(now);
-        paramIndex++;
-      } else if (params.status === 'failed') {
-        updates.push(`failed_at = $${paramIndex}`);
-        values.push(now);
-        paramIndex++;
-        updates.push(`retry_count = retry_count + 1`);
-        if (params.errorMessage) {
-          updates.push(`error_message = $${paramIndex}`);
-          values.push(params.errorMessage);
-          paramIndex++;
-        }
-      }
-
-      values.push(params.jobId);
-
-      await client.query(
-        `UPDATE print_queue SET ${updates.join(', ')}
-         WHERE job_id = $${paramIndex}`,
-        values
+      const current = await client.query(
+        `SELECT pq.status, pq.printer_id, pq.printed_pages, pq.retry_count, pq.max_retries,
+                pj.total_pages, pj.copies
+           FROM print_queue pq
+           JOIN print_jobs pj ON pq.job_id = pj.id
+          WHERE pq.job_id = $1
+          FOR UPDATE OF pq`,
+        [params.jobId]
       );
 
-      // Update print job status
-      const jobUpdates: string[] = [];
-      const jobValues: any[] = [];
-      let jobParamIndex = 1;
-
-      if (params.status === 'completed') {
-        jobUpdates.push(`status = 'completed'`);
-        jobUpdates.push(`completed_at = $${jobParamIndex}`);
-        jobValues.push(now);
-        jobParamIndex++;
-      } else if (params.status === 'failed') {
-        jobUpdates.push(`status = 'failed'`);
-        if (params.errorMessage) {
-          jobUpdates.push(`error_message = $${jobParamIndex}`);
-          jobValues.push(params.errorMessage);
-          jobParamIndex++;
-        }
+      if (current.rows.length === 0) {
+        throw new AppError('Job not found in print queue', 404);
       }
 
-      if (params.printedPages !== undefined) {
-        jobUpdates.push(`printed_pages = $${jobParamIndex}`);
-        jobValues.push(params.printedPages);
-        jobParamIndex++;
+      const row = current.rows[0];
+
+      // Ownership: reject a report about a job this printer does not hold.
+      if (params.printerUuid && row.printer_id !== params.printerUuid) {
+        await client.query('ROLLBACK');
+        logger.warn('Printer reported status for a job it does not hold', {
+          jobId: params.jobId,
+          reportedBy: params.printerUuid,
+          heldBy: row.printer_id,
+        });
+        throw new AppError('This job is not assigned to your printer', 403);
       }
 
-      if (jobUpdates.length > 0) {
-        jobValues.push(params.jobId);
-        await client.query(
-          `UPDATE print_jobs SET ${jobUpdates.join(', ')}
-           WHERE id = $${jobParamIndex}`,
-          jobValues
-        );
+      // Idempotency: a completed or cancelled job is final.
+      if (TERMINAL_STATUSES.includes(row.status)) {
+        await client.query('COMMIT');
+        logger.debug('Ignoring status update for terminal job', {
+          jobId: params.jobId,
+          current: row.status,
+          reported: params.status,
+        });
+        return { applied: false, status: row.status };
       }
 
-      // If failed and can retry, requeue
+      // Progress only moves forward, and never past the real page count.
+      const maxPages = (row.total_pages || 0) * (row.copies || 1);
+      const printedPages =
+        params.printedPages !== undefined
+          ? Math.min(Math.max(params.printedPages, row.printed_pages || 0), maxPages)
+          : row.printed_pages;
+
+      await client.query(
+        // $1 is cast explicitly everywhere: assigning it to a varchar column while
+        // also comparing it against text literals otherwise leaves Postgres unable
+        // to settle on one type for the parameter (SQLSTATE 42P08).
+        `UPDATE print_queue SET
+           status           = $1::varchar,
+           printed_pages    = $2,
+           error_message    = $3,
+           error_code       = $4,
+           last_reported_at = NOW(),
+           started_at       = CASE WHEN $1::text = 'printing' THEN COALESCE(started_at, NOW())
+                                   ELSE started_at END,
+           completed_at     = CASE WHEN $1::text = 'completed' THEN NOW() ELSE completed_at END,
+           failed_at        = CASE WHEN $1::text = 'failed'    THEN NOW() ELSE failed_at END,
+           retry_count      = CASE WHEN $1::text = 'failed' THEN retry_count + 1
+                                   ELSE retry_count END,
+           lease_expires_at = CASE WHEN $1::text IN ('completed', 'failed', 'cancelled') THEN NULL
+                                   ELSE NOW() + ($5 || ' seconds')::interval END,
+           updated_at       = NOW()
+         WHERE job_id = $6`,
+        [
+          params.status,
+          printedPages,
+          params.errorMessage ?? null,
+          params.errorCode ?? null,
+          String(env.printer.job_lease_seconds),
+          params.jobId,
+        ]
+      );
+
+      // Mirror onto print_jobs, which is what the customer-facing API reads.
+      await client.query(
+        `UPDATE print_jobs SET
+           printed_pages = $1,
+           status = CASE
+                      WHEN $2::text = 'completed' THEN 'completed'
+                      WHEN $2::text = 'cancelled' THEN 'cancelled'
+                      WHEN $2::text = 'printing'  THEN 'printing'
+                      ELSE status
+                    END,
+           completed_at  = CASE WHEN $2::text = 'completed' THEN NOW() ELSE completed_at END,
+           error_message = COALESCE($3, error_message),
+           print_duration_seconds = CASE
+                      WHEN $2::text = 'completed' AND started_printing_at IS NOT NULL
+                      THEN EXTRACT(EPOCH FROM (NOW() - started_printing_at))::int
+                      ELSE print_duration_seconds
+                    END
+         WHERE id = $4`,
+        [printedPages, params.status, params.errorMessage ?? null, params.jobId]
+      );
+
+      let finalStatus: string = params.status;
+
+      // Failure handling: requeue while retries remain, otherwise fail for good.
       if (params.status === 'failed') {
-        const queueResult = await client.query(
-          `SELECT retry_count, max_retries FROM print_queue WHERE job_id = $1`,
-          [params.jobId]
-        );
+        const retriesUsed = (row.retry_count || 0) + 1;
 
-        if (queueResult.rows.length > 0) {
-          const { retry_count, max_retries } = queueResult.rows[0];
-          if (retry_count < max_retries) {
-            await client.query(
-              `UPDATE print_queue SET
-                status = 'queued',
-                printer_id = NULL,
-                assigned_at = NULL,
-                started_at = NULL,
-                updated_at = NOW()
-               WHERE job_id = $1`,
-              [params.jobId]
-            );
-            logger.info('Job requeued for retry', {
-              jobId: params.jobId,
-              retryCount: retry_count + 1,
-            });
-          }
+        if (retriesUsed < row.max_retries) {
+          await client.query(
+            `UPDATE print_queue SET
+               status = 'queued',
+               printer_id = NULL,
+               assigned_at = NULL,
+               started_at = NULL,
+               lease_expires_at = NULL,
+               updated_at = NOW()
+             WHERE job_id = $1`,
+            [params.jobId]
+          );
+          await client.query(
+            `UPDATE print_jobs SET status = 'queued', retry_count = $1 WHERE id = $2`,
+            [retriesUsed, params.jobId]
+          );
+          finalStatus = 'queued';
+          logger.info('Job requeued after failure', {
+            jobId: params.jobId,
+            attempt: retriesUsed,
+            maxRetries: row.max_retries,
+          });
+        } else {
+          await client.query(`UPDATE print_jobs SET status = 'failed' WHERE id = $1`, [
+            params.jobId,
+          ]);
+          logger.error('Job failed permanently — eligible for refund', {
+            jobId: params.jobId,
+            attempts: retriesUsed,
+            errorCode: params.errorCode,
+            errorMessage: params.errorMessage,
+          });
         }
       }
 
@@ -331,88 +495,157 @@ export class QueueService {
 
       logger.info('Job status updated', {
         jobId: params.jobId,
-        status: params.status,
+        status: finalStatus,
+        printedPages,
       });
+
+      return { applied: true, status: finalStatus };
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('Error updating job status', { error, params });
+      if (!(error instanceof AppError)) {
+        logger.error('Error updating job status', { error, jobId: params.jobId });
+      }
       throw error;
     } finally {
       client.release();
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Recovery
+  // -------------------------------------------------------------------------
+
   /**
-   * Get specific job status (for frontend polling)
+   * Return jobs whose lease expired to the queue.
+   *
+   * A Pi that loses power mid-print never sends a terminal status, so without
+   * this the job would sit in `printing` forever and the customer would never
+   * be refunded or reprinted.
    */
+  async reclaimExpiredLeases(): Promise<number> {
+    const result = await this.database.query(
+      `UPDATE print_queue SET
+         status = CASE WHEN retry_count + 1 < max_retries THEN 'queued' ELSE 'failed' END,
+         printer_id = NULL,
+         assigned_at = NULL,
+         started_at = NULL,
+         lease_expires_at = NULL,
+         retry_count = retry_count + 1,
+         error_code = 'LEASE_EXPIRED',
+         error_message = 'Printer stopped reporting before the job finished',
+         failed_at = CASE WHEN retry_count + 1 >= max_retries THEN NOW() ELSE failed_at END,
+         updated_at = NOW()
+       WHERE status IN ('assigned', 'printing')
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at < NOW()
+       RETURNING job_id, status`
+    );
+
+    if (result.rowCount) {
+      logger.warn('Reclaimed jobs with expired leases', {
+        count: result.rowCount,
+        jobIds: result.rows.map((r) => r.job_id),
+      });
+
+      // Keep print_jobs in step with the queue.
+      await this.database.query(
+        `UPDATE print_jobs pj SET status = pq.status
+           FROM print_queue pq
+          WHERE pq.job_id = pj.id AND pj.id = ANY($1::uuid[])`,
+        [result.rows.map((r) => r.job_id)]
+      );
+    }
+
+    return result.rowCount || 0;
+  }
+
+  /**
+   * Mark printers that have stopped heartbeating as offline so they stop being
+   * considered for new work.
+   */
+  async markStaleAsOffline(): Promise<number> {
+    const result = await this.database.query(
+      `UPDATE printers SET status = 'offline', updated_at = NOW()
+        WHERE status IN ('online', 'busy')
+          AND last_heartbeat < NOW() - ($1 || ' seconds')::interval`,
+      [String(env.printer.heartbeat_timeout_seconds)]
+    );
+
+    if (result.rowCount) {
+      logger.warn('Marked stale printers offline', { count: result.rowCount });
+    }
+
+    return result.rowCount || 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Reads
+  // -------------------------------------------------------------------------
+
   async getJobStatus(jobId: string): Promise<{
     jobId: string;
     status: string;
-    printedPages?: number;
+    printedPages: number;
+    /** Pages in the document. */
+    totalPages: number;
+    /** Sheets this job will produce (totalPages x copies) — what printedPages counts against. */
+    totalSheets: number;
+    copies: number;
     errorMessage?: string;
+    errorCode?: string;
     startedAt?: Date;
     completedAt?: Date;
     failedAt?: Date;
   }> {
-    try {
-      const result = await this.database.query(
-        `SELECT
-          job_id, status, error_message,
-          started_at, completed_at, failed_at
-         FROM print_queue
-         WHERE job_id = $1`,
-        [jobId]
-      );
+    const result = await this.database.query(
+      `SELECT pq.job_id, pq.status, pq.printed_pages, pq.error_message, pq.error_code,
+              pq.started_at, pq.completed_at, pq.failed_at, pj.total_pages, pj.copies
+         FROM print_queue pq
+         JOIN print_jobs pj ON pq.job_id = pj.id
+        WHERE pq.job_id = $1`,
+      [jobId]
+    );
 
-      if (result.rows.length === 0) {
-        throw new AppError('Job not found', 404);
-      }
-
+    if (result.rows.length > 0) {
       const row = result.rows[0];
       return {
         jobId: row.job_id,
         status: row.status,
-        errorMessage: row.error_message,
-        startedAt: row.started_at,
-        completedAt: row.completed_at,
-        failedAt: row.failed_at,
+        printedPages: row.printed_pages || 0,
+        totalPages: row.total_pages || 0,
+        totalSheets: (row.total_pages || 0) * (row.copies || 1),
+        copies: row.copies || 1,
+        errorMessage: row.error_message ?? undefined,
+        errorCode: row.error_code ?? undefined,
+        startedAt: row.started_at ?? undefined,
+        completedAt: row.completed_at ?? undefined,
+        failedAt: row.failed_at ?? undefined,
       };
-    } catch (error: any) {
-      // Fallback: if print_queue table doesn't exist or has missing columns, query print_jobs directly
-      if (
-        error.message?.includes('print_queue') ||
-        error.message?.includes('does not exist') ||
-        error.code === '42P01' ||
-        error.code === '42703'
-      ) {
-        logger.warn('print_queue unavailable, using print_jobs fallback', {
-          jobId,
-          error: error.message,
-        });
-
-        const result = await this.database.query(
-          `SELECT id, status, error_message FROM print_jobs WHERE id = $1`,
-          [jobId]
-        );
-
-        if (result.rows.length === 0) {
-          throw new AppError('Job not found', 404);
-        }
-
-        const row = result.rows[0];
-        return {
-          jobId: row.id,
-          status: row.status,
-          errorMessage: row.error_message,
-        };
-      }
-      throw error;
     }
+
+    // Not queued yet (unpaid, or still being configured): report the job itself.
+    const jobResult = await this.database.query(
+      `SELECT id, status, printed_pages, total_pages, copies, error_message
+         FROM print_jobs WHERE id = $1`,
+      [jobId]
+    );
+
+    if (jobResult.rows.length === 0) {
+      throw new AppError('Job not found', 404);
+    }
+
+    const job = jobResult.rows[0];
+    return {
+      jobId: job.id,
+      status: job.status,
+      printedPages: job.printed_pages || 0,
+      totalPages: job.total_pages || 0,
+      totalSheets: (job.total_pages || 0) * (job.copies || 1),
+      copies: job.copies || 1,
+      errorMessage: job.error_message ?? undefined,
+    };
   }
 
-  /**
-   * Get queue status
-   */
   async getQueueStatus(): Promise<{
     queued: number;
     assigned: number;
@@ -422,11 +655,11 @@ export class QueueService {
   }> {
     const result = await this.database.query(
       `SELECT
-        COUNT(*) FILTER (WHERE status = 'queued') as queued,
-        COUNT(*) FILTER (WHERE status = 'assigned') as assigned,
-        COUNT(*) FILTER (WHERE status = 'printing') as printing,
+        COUNT(*) FILTER (WHERE status = 'queued')    as queued,
+        COUNT(*) FILTER (WHERE status = 'assigned')  as assigned,
+        COUNT(*) FILTER (WHERE status = 'printing')  as printing,
         COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'failed') as failed
+        COUNT(*) FILTER (WHERE status = 'failed')    as failed
        FROM print_queue
        WHERE created_at > NOW() - INTERVAL '24 hours'`
     );
@@ -440,9 +673,6 @@ export class QueueService {
     };
   }
 
-  /**
-   * Get all registered printers
-   */
   async getPrinters(kioskId?: string): Promise<Printer[]> {
     const query = kioskId
       ? `SELECT * FROM printers WHERE kiosk_id = $1 ORDER BY name`
@@ -453,9 +683,15 @@ export class QueueService {
     return result.rows.map((row) => this.mapRowToPrinter(row));
   }
 
-  /**
-   * Map database row to Printer object
-   */
+  async getPendingJobsCount(printerUuid: string): Promise<number> {
+    const result = await this.database.query(
+      `SELECT COUNT(*) as count FROM print_queue
+        WHERE printer_id = $1 AND status IN ('assigned', 'printing')`,
+      [printerUuid]
+    );
+    return parseInt(result.rows[0].count) || 0;
+  }
+
   private mapRowToPrinter(row: any): Printer {
     return {
       id: row.id,

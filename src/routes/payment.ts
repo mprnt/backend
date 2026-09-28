@@ -1,6 +1,9 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { paymentController } from '../controllers/paymentController';
 import { validate } from '../middleware/validate';
+import env from '../config/environment';
+import { AppError } from '../utils/errors';
+import logger from '../utils/logger';
 import { asyncHandler } from '../utils/asyncHandler';
 import {
   verifyPaymentSchema,
@@ -9,6 +12,24 @@ import {
 } from '../validators/paymentValidator';
 
 const router = Router();
+
+/**
+ * Guards the mock payment endpoints.
+ *
+ * `simulate-success` derives an HMAC over `orderId|paymentId` using the *real*
+ * Razorpay API secret and hands it to an unauthenticated caller. Even though
+ * /payment/verify would still reject the fabricated paymentId against the live
+ * gateway, exposing a signing oracle over the live secret is not acceptable in
+ * production. These endpoints exist for local development only.
+ */
+const developmentOnly = (req: Request, _res: Response, next: NextFunction): void => {
+  if (env.node_env === 'production') {
+    logger.warn('Blocked mock payment endpoint in production', { path: req.path, ip: req.ip });
+    next(new AppError('Not found', 404));
+    return;
+  }
+  next();
+};
 
 /**
  * @swagger
@@ -347,6 +368,7 @@ router.get(
  */
 router.post(
   '/payment/mock/simulate-success',
+  developmentOnly,
   validate(simulatePaymentSchema, 'body'),
   asyncHandler(paymentController.simulateSuccess.bind(paymentController))
 );
@@ -399,6 +421,7 @@ router.post(
  */
 router.post(
   '/payment/mock/simulate-failure',
+  developmentOnly,
   validate(simulatePaymentSchema, 'body'),
   asyncHandler(paymentController.simulateFailure.bind(paymentController))
 );

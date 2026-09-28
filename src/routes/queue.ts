@@ -1,72 +1,90 @@
 import { Router } from 'express';
 import { queueController } from '../controllers/queueController';
 import { validate } from '../middleware/validate';
+import { authenticate, authorize } from '../middleware/auth';
+import { authenticatePrinter, requireProvisioningToken } from '../middleware/printerAuth';
+import { printerRateLimiter, printerEnrollRateLimiter } from '../middleware/rateLimiter';
 import { asyncHandler } from '../utils/asyncHandler';
 import {
+  enrollPrinterSchema,
   registerPrinterSchema,
   heartbeatSchema,
   pollQueueSchema,
   updateJobStatusSchema,
+  jobIdParamSchema,
+  printerIdParamSchema,
 } from '../validators/queueValidator';
 
 const router = Router();
 
 /**
+ * Raspberry Pi API.
+ *
+ * Every endpoint below except /printers/enroll requires the printer's own
+ * credentials:
+ *   X-Printer-Id:  RPI_M001_01
+ *   X-Printer-Key: mprnt_pk_...
+ *
+ * Enrollment instead requires the deployment-wide X-Provisioning-Token, and is
+ * the only way to obtain a printer key.
+ */
+
+/**
  * @swagger
- * /queue/printers/register:
+ * /queue/printers/enroll:
  *   post:
- *     summary: Register a printer (Raspberry Pi)
- *     description: Register or update a Raspberry Pi printer device with the system
- *     tags: [Print Queue]
+ *     summary: Enroll a Raspberry Pi and receive its API key (one time)
+ *     description: |
+ *       Requires the `X-Provisioning-Token` header. Returns the printer's API key
+ *       in plaintext exactly once — it is stored only as a SHA-256 digest and
+ *       cannot be recovered. Re-enrolling an existing printer returns 409; use
+ *       the admin rotate endpoint instead.
+ *     tags: [Printer API]
+ *     parameters:
+ *       - in: header
+ *         name: X-Provisioning-Token
+ *         required: true
+ *         schema: { type: string }
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - printerId
- *               - kioskId
- *               - name
- *               - capabilities
+ *             required: [printerId, kioskId, name, capabilities]
  *             properties:
- *               printerId:
- *                 type: string
- *                 example: RPI_001
- *               kioskId:
- *                 type: string
- *                 format: uuid
- *               name:
- *                 type: string
- *                 example: Kiosk 1 - Printer A
+ *               printerId: { type: string, example: RPI_M001_01 }
+ *               kioskId:   { type: string, format: uuid }
+ *               name:      { type: string, example: "Kiosk M001 - Printer A" }
+ *               ipAddress: { type: string, example: 192.168.1.50 }
  *               capabilities:
  *                 type: object
- *                 properties:
- *                   supportsColor:
- *                     type: boolean
- *                     default: false
- *                   supportsDoubleSided:
- *                     type: boolean
- *                     default: false
- *                   maxCopies:
- *                     type: integer
- *                     default: 100
- *                   supportedPaperSizes:
- *                     type: array
- *                     items:
- *                       type: string
- *                     default: ["a4"]
- *               ipAddress:
- *                 type: string
- *                 example: 192.168.1.100
+ *                 required: [supportsColor, supportsDoubleSided, maxCopies, supportedPaperSizes]
  *     responses:
- *       201:
- *         description: Printer registered successfully
- *       400:
- *         description: Validation error
+ *       201: { description: Enrolled; response contains the one-time API key }
+ *       409: { description: Printer already enrolled }
+ */
+router.post(
+  '/printers/enroll',
+  printerEnrollRateLimiter,
+  requireProvisioningToken,
+  validate(enrollPrinterSchema, 'body'),
+  asyncHandler(queueController.enrollPrinter.bind(queueController))
+);
+
+/**
+ * @swagger
+ * /queue/printers/register:
+ *   post:
+ *     summary: Refresh this printer's registration on boot
+ *     tags: [Printer API]
+ *     responses:
+ *       200: { description: Registration refreshed }
  */
 router.post(
   '/printers/register',
+  printerRateLimiter,
+  asyncHandler(authenticatePrinter),
   validate(registerPrinterSchema, 'body'),
   asyncHandler(queueController.registerPrinter.bind(queueController))
 );
@@ -75,46 +93,17 @@ router.post(
  * @swagger
  * /queue/heartbeat:
  *   post:
- *     summary: Update printer heartbeat
- *     description: Raspberry Pi sends regular status updates
- *     tags: [Print Queue]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - printerId
- *               - status
- *             properties:
- *               printerId:
- *                 type: string
- *               status:
- *                 type: string
- *                 enum: [online, offline, busy, error, maintenance]
- *               currentJobId:
- *                 type: string
- *                 format: uuid
- *               errorMessage:
- *                 type: string
- *               paperLevel:
- *                 type: integer
- *                 minimum: 0
- *                 maximum: 100
- *               inkLevel:
- *                 type: object
- *                 properties:
- *                   black:
- *                     type: integer
- *                   color:
- *                     type: integer
+ *     summary: Report printer health
+ *     description: Send every 30 seconds. Missing heartbeats for longer than
+ *       PRINTER_HEARTBEAT_TIMEOUT_SECONDS marks the printer offline.
+ *     tags: [Printer API]
  *     responses:
- *       200:
- *         description: Heartbeat updated
+ *       200: { description: Heartbeat recorded }
  */
 router.post(
   '/heartbeat',
+  printerRateLimiter,
+  asyncHandler(authenticatePrinter),
   validate(heartbeatSchema, 'body'),
   asyncHandler(queueController.updateHeartbeat.bind(queueController))
 );
@@ -123,257 +112,99 @@ router.post(
  * @swagger
  * /queue/poll:
  *   post:
- *     summary: Poll for next print job
+ *     summary: Claim the next print job
  *     description: |
- *       Raspberry Pi polls this endpoint to get the next print job.
+ *       Returns `data: null` when there is nothing to print. A returned job is
+ *       claimed exclusively by this printer under a lease; finish and report
+ *       before `leaseExpiresAt` or the job is requeued for another printer.
  *
- *       **Workflow:**
- *       1. Raspberry Pi sends its capabilities
- *       2. Backend assigns next matching job
- *       3. Returns job details with document download URL
- *       4. Raspberry Pi downloads document and prints
- *       5. Raspberry Pi updates job status via /queue/jobs/:jobId/status
- *     tags: [Print Queue]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - printerId
- *               - capabilities
- *             properties:
- *               printerId:
- *                 type: string
- *                 example: RPI_001
- *               capabilities:
- *                 type: object
- *                 required:
- *                   - supportsColor
- *                   - supportsDoubleSided
- *                   - maxCopies
- *                   - supportedPaperSizes
- *                 properties:
- *                   supportsColor:
- *                     type: boolean
- *                   supportsDoubleSided:
- *                     type: boolean
- *                   maxCopies:
- *                     type: integer
- *                   supportedPaperSizes:
- *                     type: array
- *                     items:
- *                       type: string
+ *       If the printer already holds a job (e.g. it restarted), the same job is
+ *       returned again with a fresh `documentUrl` rather than a new one.
+ *     tags: [Printer API]
  *     responses:
- *       200:
- *         description: Job assigned or no jobs available
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 message:
- *                   type: string
- *                 data:
- *                   type: object
- *                   nullable: true
- *                   properties:
- *                     jobId:
- *                       type: string
- *                       format: uuid
- *                     documentUrl:
- *                       type: string
- *                       format: uri
- *                       description: Pre-signed S3 URL to download PDF
- *                     settings:
- *                       type: object
- *                     totalPages:
- *                       type: integer
- *                     assignedAt:
- *                       type: string
- *                       format: date-time
+ *       200: { description: A job assignment, or null }
  */
 router.post(
   '/poll',
+  printerRateLimiter,
+  asyncHandler(authenticatePrinter),
   validate(pollQueueSchema, 'body'),
   asyncHandler(queueController.pollQueue.bind(queueController))
 );
 
 /**
  * @swagger
- * /queue/jobs/{jobId}:
- *   get:
- *     summary: Get job status
- *     description: Get the current status of a print job (for frontend polling)
- *     tags: [Print Queue]
- *     parameters:
- *       - in: path
- *         name: jobId
- *         required: true
- *         schema:
- *           type: string
- *           format: uuid
- *     responses:
- *       200:
- *         description: Job status
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: object
- *                   properties:
- *                     jobId:
- *                       type: string
- *                     status:
- *                       type: string
- *                       enum: [queued, assigned, printing, completed, failed, cancelled]
- *                     printedPages:
- *                       type: integer
- *                     errorMessage:
- *                       type: string
- */
-router.get('/jobs/:jobId', asyncHandler(queueController.getJobStatus.bind(queueController)));
-
-/**
- * @swagger
  * /queue/jobs/{jobId}/status:
  *   post:
- *     summary: Update job status
+ *     summary: Report progress or the outcome of a held job
  *     description: |
- *       Raspberry Pi updates job status during printing.
+ *       Allowed values: `printing`, `completed`, `failed`, `cancelled`.
+ *       `errorCode` is required when reporting `failed`.
  *
- *       **Status Flow:**
- *       - `printing` - Job started printing
- *       - `completed` - Job finished successfully
- *       - `failed` - Job failed (will be retried if retries available)
- *     tags: [Print Queue]
- *     parameters:
- *       - in: path
- *         name: jobId
- *         required: true
- *         schema:
- *           type: string
- *           format: uuid
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - status
- *             properties:
- *               status:
- *                 type: string
- *                 enum: [printing, completed, failed, cancelled]
- *               errorMessage:
- *                 type: string
- *               printedPages:
- *                 type: integer
+ *       The call is idempotent: repeating a terminal update returns 200 with
+ *       `applied: false`, so the Pi can retry safely after a network failure.
+ *     tags: [Printer API]
  *     responses:
- *       200:
- *         description: Status updated successfully
+ *       200: { description: Status recorded }
+ *       403: { description: Job is not assigned to this printer }
  */
 router.post(
   '/jobs/:jobId/status',
+  printerRateLimiter,
+  asyncHandler(authenticatePrinter),
+  validate(jobIdParamSchema, 'params'),
   validate(updateJobStatusSchema, 'body'),
   asyncHandler(queueController.updateJobStatus.bind(queueController))
 );
 
 /**
  * @swagger
- * /queue/status:
+ * /queue/jobs/{jobId}:
  *   get:
- *     summary: Get queue statistics
- *     description: Get current print queue statistics (last 24 hours)
+ *     summary: Get job status (kiosk frontend polling)
  *     tags: [Print Queue]
  *     responses:
- *       200:
- *         description: Queue statistics
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: object
- *                   properties:
- *                     queue:
- *                       type: object
- *                       properties:
- *                         queued:
- *                           type: integer
- *                         assigned:
- *                           type: integer
- *                         printing:
- *                           type: integer
- *                         completed:
- *                           type: integer
- *                         failed:
- *                           type: integer
- *                     timestamp:
- *                       type: string
- *                       format: date-time
+ *       200: { description: Job status }
  */
-router.get('/status', asyncHandler(queueController.getQueueStatus.bind(queueController)));
+router.get(
+  '/jobs/:jobId',
+  validate(jobIdParamSchema, 'params'),
+  asyncHandler(queueController.getJobStatus.bind(queueController))
+);
 
-/**
- * @swagger
- * /queue/printers:
- *   get:
- *     summary: Get all registered printers
- *     description: List all Raspberry Pi printers registered in the system
- *     tags: [Print Queue]
- *     parameters:
- *       - in: query
- *         name: kioskId
- *         schema:
- *           type: string
- *           format: uuid
- *         description: Filter by kiosk ID
- *     responses:
- *       200:
- *         description: List of printers
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: object
- *                   properties:
- *                     count:
- *                       type: integer
- *                     printers:
- *                       type: array
- *                       items:
- *                         type: object
- *                         properties:
- *                           printerId:
- *                             type: string
- *                           name:
- *                             type: string
- *                           status:
- *                             type: string
- *                           kioskId:
- *                             type: string
- *                           lastHeartbeat:
- *                             type: string
- *                             format: date-time
- *                           capabilities:
- *                             type: object
- */
-router.get('/printers', asyncHandler(queueController.getPrinters.bind(queueController)));
+// ---------------------------------------------------------------------------
+// Admin endpoints. These expose fleet-wide state and mint credentials, so they
+// require an authenticated admin JWT.
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/status',
+  authenticate,
+  authorize('admin', 'operator'),
+  asyncHandler(queueController.getQueueStatus.bind(queueController))
+);
+
+router.get(
+  '/printers',
+  authenticate,
+  authorize('admin', 'operator'),
+  asyncHandler(queueController.getPrinters.bind(queueController))
+);
+
+router.post(
+  '/printers/:printerId/rotate-key',
+  authenticate,
+  authorize('admin'),
+  validate(printerIdParamSchema, 'params'),
+  asyncHandler(queueController.rotateKey.bind(queueController))
+);
+
+router.post(
+  '/printers/:printerId/revoke',
+  authenticate,
+  authorize('admin'),
+  validate(printerIdParamSchema, 'params'),
+  asyncHandler(queueController.revokeKey.bind(queueController))
+);
 
 export default router;

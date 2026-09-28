@@ -41,3 +41,7 @@ temp/
 
 # Uploads
 uploads/
+
+# Generated kiosk QR codes (regenerate with `node generate-qr.js`)
+qr-*.png
+qr-*.svg
