@@ -239,10 +239,7 @@ router.post(
  *                     errorMessage:
  *                       type: string
  */
-router.get(
-  '/jobs/:jobId',
-  asyncHandler(queueController.getJobStatus.bind(queueController))
-);
+router.get('/jobs/:jobId', asyncHandler(queueController.getJobStatus.bind(queueController)));
 
 /**
  * @swagger
@@ -327,10 +324,7 @@ router.post(
  *                       type: string
  *                       format: date-time
  */
-router.get(
-  '/status',
-  asyncHandler(queueController.getQueueStatus.bind(queueController))
-);
+router.get('/status', asyncHandler(queueController.getQueueStatus.bind(queueController)));
 
 /**
  * @swagger
@@ -380,9 +374,6 @@ router.get(
  *                           capabilities:
  *                             type: object
  */
-router.get(
-  '/printers',
-  asyncHandler(queueController.getPrinters.bind(queueController))
-);
+router.get('/printers', asyncHandler(queueController.getPrinters.bind(queueController)));
 
 export default router;

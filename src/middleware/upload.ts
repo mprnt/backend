@@ -8,12 +8,7 @@ import { AppError } from './errorHandler';
 
 // File filter - only allow PDF, PNG, JPEG
 const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  const allowedMimeTypes = [
-    'application/pdf',
-    'image/png',
-    'image/jpeg',
-    'image/jpg',
-  ];
+  const allowedMimeTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
 
   if (allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);

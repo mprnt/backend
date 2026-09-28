@@ -73,10 +73,9 @@ export class PrinterService {
    * Get printer by ID
    */
   async getPrinter(printerId: string): Promise<Printer> {
-    const result = await this.database.query(
-      'SELECT * FROM printers WHERE printer_id = $1',
-      [printerId]
-    );
+    const result = await this.database.query('SELECT * FROM printers WHERE printer_id = $1', [
+      printerId,
+    ]);
 
     if (result.rows.length === 0) {
       throw new AppError('Printer not found', 404);
@@ -94,7 +93,7 @@ export class PrinterService {
       [kioskId]
     );
 
-    return result.rows.map(row => this.rowToPrinter(row));
+    return result.rows.map((row) => this.rowToPrinter(row));
   }
 
   /**
@@ -115,7 +114,7 @@ export class PrinterService {
       [kioskId, colorMode === 'color', doubleSided]
     );
 
-    return result.rows.map(row => this.rowToPrinter(row));
+    return result.rows.map((row) => this.rowToPrinter(row));
   }
 
   /**
@@ -160,7 +159,7 @@ export class PrinterService {
        AND last_heartbeat < NOW() - INTERVAL '5 minutes'`
     );
 
-    return result.rows.map(row => this.rowToPrinter(row));
+    return result.rows.map((row) => this.rowToPrinter(row));
   }
 
   /**

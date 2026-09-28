@@ -12,10 +12,7 @@ export class PricingService {
   /**
    * Calculate price for a print job based on settings and document page count
    */
-  async calculatePrice(
-    settings: PrintSettings,
-    documentPageCount: number
-  ): Promise<PricingResult> {
+  async calculatePrice(settings: PrintSettings, documentPageCount: number): Promise<PricingResult> {
     try {
       // Validate settings
       this.validateSettings(settings, documentPageCount);
@@ -31,15 +28,11 @@ export class PricingService {
 
       // Calculate physical pages (accounting for double-sided printing)
       const physicalPages =
-        settings.printSides === 'double'
-          ? Math.ceil(logicalPages / 2)
-          : logicalPages;
+        settings.printSides === 'double' ? Math.ceil(logicalPages / 2) : logicalPages;
 
       // Get price per page based on color mode
       const pricePerPage =
-        settings.colorMode === 'color'
-          ? PRICING.COLOR_PER_PAGE
-          : PRICING.BW_PER_PAGE;
+        settings.colorMode === 'color' ? PRICING.COLOR_PER_PAGE : PRICING.BW_PER_PAGE;
 
       // Calculate total pages to charge for (physical pages * copies)
       const totalPages = physicalPages * settings.copies;
@@ -98,17 +91,11 @@ export class PricingService {
         const end = parseInt(endStr, 10);
 
         if (isNaN(start) || isNaN(end)) {
-          throw new AppError(
-            `Invalid page range format: "${part}". Expected format: "1-5"`,
-            400
-          );
+          throw new AppError(`Invalid page range format: "${part}". Expected format: "1-5"`, 400);
         }
 
         if (start < 1) {
-          throw new AppError(
-            `Invalid page number: ${start}. Pages start at 1`,
-            400
-          );
+          throw new AppError(`Invalid page number: ${start}. Pages start at 1`, 400);
         }
 
         if (start > end) {
@@ -119,10 +106,7 @@ export class PricingService {
         }
 
         if (end > maxPages) {
-          throw new AppError(
-            `Page ${end} exceeds document page count (${maxPages})`,
-            400
-          );
+          throw new AppError(`Page ${end} exceeds document page count (${maxPages})`, 400);
         }
 
         for (let i = start; i <= end; i++) {
@@ -133,24 +117,15 @@ export class PricingService {
         const page = parseInt(part, 10);
 
         if (isNaN(page)) {
-          throw new AppError(
-            `Invalid page number: "${part}". Expected a number`,
-            400
-          );
+          throw new AppError(`Invalid page number: "${part}". Expected a number`, 400);
         }
 
         if (page < 1) {
-          throw new AppError(
-            `Invalid page number: ${page}. Pages start at 1`,
-            400
-          );
+          throw new AppError(`Invalid page number: ${page}. Pages start at 1`, 400);
         }
 
         if (page > maxPages) {
-          throw new AppError(
-            `Page ${page} exceeds document page count (${maxPages})`,
-            400
-          );
+          throw new AppError(`Page ${page} exceeds document page count (${maxPages})`, 400);
         }
 
         pages.add(page);
@@ -176,10 +151,7 @@ export class PricingService {
 
     // Validate custom range if provided
     if (settings.pageRange === 'custom' && !settings.customRange) {
-      throw new AppError(
-        'Custom range is required when page range is "custom"',
-        400
-      );
+      throw new AppError('Custom range is required when page range is "custom"', 400);
     }
 
     // Validate page range format

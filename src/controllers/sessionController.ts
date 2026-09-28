@@ -63,7 +63,7 @@ export class SessionController {
   async createSession(req: Request, res: Response): Promise<void> {
     const { kioskId } = req.body;
     const clientIp = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'] as string | undefined;
+    const userAgent = req.headers['user-agent'];
 
     logger.info('Creating session request', {
       kioskId: kioskId || 'auto-assign',
@@ -71,11 +71,7 @@ export class SessionController {
       userAgent,
     });
 
-    const { session, kiosk } = await sessionService.createSession(
-      kioskId,
-      clientIp,
-      userAgent
-    );
+    const { session, kiosk } = await sessionService.createSession(kioskId, clientIp, userAgent);
 
     res.status(201).json({
       status: 'success',

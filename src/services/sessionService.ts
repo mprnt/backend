@@ -30,10 +30,7 @@ export class SessionService {
    * Get kiosk by kiosk_id (e.g., 'M001')
    */
   async getKioskByKioskId(kioskId: string): Promise<Kiosk | null> {
-    const result = await db.query<Kiosk>(
-      'SELECT * FROM kiosks WHERE kiosk_id = $1',
-      [kioskId]
-    );
+    const result = await db.query<Kiosk>('SELECT * FROM kiosks WHERE kiosk_id = $1', [kioskId]);
     return result.rows[0] || null;
   }
 
@@ -170,31 +167,27 @@ export class SessionService {
     }
 
     // Get kiosk details
-    const kioskResult = await db.query<Kiosk>(
-      'SELECT * FROM kiosks WHERE id = $1',
-      [session.kiosk_id]
-    );
+    const kioskResult = await db.query<Kiosk>('SELECT * FROM kiosks WHERE id = $1', [
+      session.kiosk_id,
+    ]);
     const kiosk = kioskResult.rows[0];
 
     // Get associated document (if any)
-    const documentResult = await db.query(
-      'SELECT * FROM documents WHERE session_id = $1',
-      [session.id]
-    );
+    const documentResult = await db.query('SELECT * FROM documents WHERE session_id = $1', [
+      session.id,
+    ]);
     const document = documentResult.rows[0] || null;
 
     // Get print job (if any)
-    const printJobResult = await db.query(
-      'SELECT * FROM print_jobs WHERE session_id = $1',
-      [session.id]
-    );
+    const printJobResult = await db.query('SELECT * FROM print_jobs WHERE session_id = $1', [
+      session.id,
+    ]);
     const printJob = printJobResult.rows[0] || null;
 
     // Get payment (if any)
-    const paymentResult = await db.query(
-      'SELECT * FROM payments WHERE print_job_id = $1',
-      [printJob?.id]
-    );
+    const paymentResult = await db.query('SELECT * FROM payments WHERE print_job_id = $1', [
+      printJob?.id,
+    ]);
     const payment = paymentResult.rows[0] || null;
 
     logger.info('Retrieved session details', {
@@ -298,7 +291,15 @@ export class SessionService {
 
     // Map results
     const sessions = sessionsResult.rows.map((row: any) => {
-      const { kiosk_id, location, kiosk_status, capabilities, printer_status, is_expired, ...session } = row;
+      const {
+        kiosk_id,
+        location,
+        kiosk_status,
+        capabilities,
+        printer_status,
+        is_expired,
+        ...session
+      } = row;
       return {
         ...session,
         kiosk: {

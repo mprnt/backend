@@ -82,10 +82,7 @@ export class PrintJobService {
       }
 
       // 4. Calculate pricing
-      const pricing = await pricingService.calculatePrice(
-        params.settings,
-        document.page_count
-      );
+      const pricing = await pricingService.calculatePrice(params.settings, document.page_count);
 
       // 5. Create print job
       const jobId = uuidv4();
@@ -152,10 +149,7 @@ export class PrintJobService {
    * Get print job by ID
    */
   async getPrintJob(jobId: string): Promise<PrintJob | null> {
-    const result = await this.database.query(
-      `SELECT * FROM print_jobs WHERE id = $1`,
-      [jobId]
-    );
+    const result = await this.database.query(`SELECT * FROM print_jobs WHERE id = $1`, [jobId]);
 
     if (result.rows.length === 0) {
       return null;
@@ -183,9 +177,7 @@ export class PrintJobService {
   /**
    * Update print job settings and recalculate pricing
    */
-  async updateSettings(
-    params: UpdatePrintJobSettingsParams
-  ): Promise<{
+  async updateSettings(params: UpdatePrintJobSettingsParams): Promise<{
     job: PrintJob;
     pricing: PricingResult;
   }> {
@@ -234,10 +226,7 @@ export class PrintJobService {
       };
 
       // 4. Recalculate pricing
-      const pricing = await pricingService.calculatePrice(
-        newSettings,
-        existingJob.page_count
-      );
+      const pricing = await pricingService.calculatePrice(newSettings, existingJob.page_count);
 
       // 5. Update job
       const updateResult = await client.query(
@@ -292,11 +281,7 @@ export class PrintJobService {
   /**
    * Update print job status
    */
-  async updateStatus(
-    jobId: string,
-    status: string,
-    errorMessage?: string
-  ): Promise<PrintJob> {
+  async updateStatus(jobId: string, status: string, errorMessage?: string): Promise<PrintJob> {
     const updates: string[] = ['status = $1'];
     const values: any[] = [status];
     let paramIndex = 2;

@@ -143,21 +143,17 @@ export type KioskInsert = Omit<Kiosk, 'id' | 'created_at' | 'updated_at'> &
 export type PrintSessionInsert = Omit<PrintSession, 'id' | 'created_at'> &
   Partial<Pick<PrintSession, 'id'>>;
 
-export type DocumentInsert = Omit<Document, 'id' | 'uploaded_at'> &
-  Partial<Pick<Document, 'id'>>;
+export type DocumentInsert = Omit<Document, 'id' | 'uploaded_at'> & Partial<Pick<Document, 'id'>>;
 
-export type PrintJobInsert = Omit<PrintJob, 'id' | 'created_at'> &
-  Partial<Pick<PrintJob, 'id'>>;
+export type PrintJobInsert = Omit<PrintJob, 'id' | 'created_at'> & Partial<Pick<PrintJob, 'id'>>;
 
-export type PaymentInsert = Omit<Payment, 'id' | 'initiated_at'> &
-  Partial<Pick<Payment, 'id'>>;
+export type PaymentInsert = Omit<Payment, 'id' | 'initiated_at'> & Partial<Pick<Payment, 'id'>>;
 
 export type AnalyticsEventInsert = Omit<AnalyticsEvent, 'id' | 'occurred_at'>;
 
 export type DailyStatsInsert = Omit<DailyStats, 'id' | 'last_updated_at'>;
 
-export type AdminUserInsert = Omit<AdminUser, 'id' | 'created_at'> &
-  Partial<Pick<AdminUser, 'id'>>;
+export type AdminUserInsert = Omit<AdminUser, 'id' | 'created_at'> & Partial<Pick<AdminUser, 'id'>>;
 
 export type AuditLogInsert = Omit<AuditLog, 'id' | 'created_at'>;
 

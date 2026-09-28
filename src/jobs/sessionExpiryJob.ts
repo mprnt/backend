@@ -49,14 +49,26 @@ export async function processSessionExpiry(_job: Job): Promise<{
 
           const documents = documentsResult.rows;
 
-          // TODO: Delete documents from S3/MinIO
-          // For now, we just log the documents that should be deleted
+          // Delete documents from S3/MinIO
           if (documents.length > 0) {
             logger.info('Documents to delete from S3', {
               sessionId: session.session_id,
               documentCount: documents.length,
               s3Keys: documents.map((d: any) => d.s3_key),
             });
+
+            for (const doc of documents) {
+              if (doc.s3_key) {
+                try {
+                  const { storageService } = await import('../services/storageService');
+                  await storageService.deleteFile(doc.s3_key);
+                } catch (err) {
+                  logger.error(`Failed to delete document from S3: ${doc.s3_key}`, {
+                    error: err instanceof Error ? err.message : err,
+                  });
+                }
+              }
+            }
 
             // Remove payment orders before document deletion for databases created
             // with the legacy duplicate foreign key constraint.
@@ -69,10 +81,7 @@ export async function processSessionExpiry(_job: Job): Promise<{
             );
 
             // Mark documents as deleted in database
-            await client.query(
-              'DELETE FROM documents WHERE session_id = $1',
-              [session.id]
-            );
+            await client.query('DELETE FROM documents WHERE session_id = $1', [session.id]);
 
             documentsDeleted += documents.length;
           }

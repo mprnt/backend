@@ -126,10 +126,9 @@ export class QueueService {
       await client.query('BEGIN');
 
       // Get printer ID
-      const printerResult = await client.query(
-        `SELECT id FROM printers WHERE printer_id = $1`,
-        [params.printerId]
-      );
+      const printerResult = await client.query(`SELECT id FROM printers WHERE printer_id = $1`, [
+        params.printerId,
+      ]);
 
       if (printerResult.rows.length === 0) {
         throw new AppError('Printer not registered', 404);
@@ -381,8 +380,16 @@ export class QueueService {
       };
     } catch (error: any) {
       // Fallback: if print_queue table doesn't exist or has missing columns, query print_jobs directly
-      if (error.message?.includes('print_queue') || error.message?.includes('does not exist') || error.code === '42P01' || error.code === '42703') {
-        logger.warn('print_queue unavailable, using print_jobs fallback', { jobId, error: error.message });
+      if (
+        error.message?.includes('print_queue') ||
+        error.message?.includes('does not exist') ||
+        error.code === '42P01' ||
+        error.code === '42703'
+      ) {
+        logger.warn('print_queue unavailable, using print_jobs fallback', {
+          jobId,
+          error: error.message,
+        });
 
         const result = await this.database.query(
           `SELECT id, status, error_message FROM print_jobs WHERE id = $1`,

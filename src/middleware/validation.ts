@@ -7,13 +7,10 @@ import { AppError } from './errorHandler';
  */
 
 // UUID v4 format validation
-const uuidSchema = Joi.string()
-  .uuid({ version: 'uuidv4' })
-  .required()
-  .messages({
-    'string.guid': 'Invalid document ID format. Must be a valid UUID.',
-    'any.required': 'Document ID is required',
-  });
+const uuidSchema = Joi.string().uuid({ version: 'uuidv4' }).required().messages({
+  'string.guid': 'Invalid document ID format. Must be a valid UUID.',
+  'any.required': 'Document ID is required',
+});
 
 // Session ID format validation (S{timestamp})
 const sessionIdSchema = Joi.string()
@@ -27,11 +24,7 @@ const sessionIdSchema = Joi.string()
 /**
  * Validate document ID parameter
  */
-export const validateDocumentId = (
-  req: Request,
-  _res: Response,
-  next: NextFunction
-): void => {
+export const validateDocumentId = (req: Request, _res: Response, next: NextFunction): void => {
   const { documentId } = req.params;
 
   const { error } = uuidSchema.validate(documentId);
@@ -46,11 +39,7 @@ export const validateDocumentId = (
 /**
  * Validate session ID parameter
  */
-export const validateSessionId = (
-  req: Request,
-  _res: Response,
-  next: NextFunction
-): void => {
+export const validateSessionId = (req: Request, _res: Response, next: NextFunction): void => {
   const { sessionId } = req.params;
 
   const { error } = sessionIdSchema.validate(sessionId);
@@ -65,11 +54,7 @@ export const validateSessionId = (
 /**
  * Validate file upload
  */
-export const validateFileUpload = (
-  req: Request,
-  _res: Response,
-  next: NextFunction
-): void => {
+export const validateFileUpload = (req: Request, _res: Response, next: NextFunction): void => {
   if (!req.file) {
     throw new AppError('No file uploaded', 400);
   }
@@ -85,10 +70,7 @@ export const validateFileUpload = (
   // Validate file type
   const allowedMimeTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
   if (!allowedMimeTypes.includes(file.mimetype)) {
-    throw new AppError(
-      `Invalid file type: ${file.mimetype}. Allowed types: PDF, PNG, JPEG`,
-      400
-    );
+    throw new AppError(`Invalid file type: ${file.mimetype}. Allowed types: PDF, PNG, JPEG`, 400);
   }
 
   next();
@@ -97,11 +79,7 @@ export const validateFileUpload = (
 /**
  * Validate query parameters for document listing
  */
-export const validateDocumentQuery = (
-  req: Request,
-  _res: Response,
-  next: NextFunction
-): void => {
+export const validateDocumentQuery = (req: Request, _res: Response, next: NextFunction): void => {
   const schema = Joi.object({
     page: Joi.number().integer().min(1).default(1),
     limit: Joi.number().integer().min(1).max(100).default(20),
@@ -127,7 +105,10 @@ export const validateDocumentQuery = (
 /**
  * General request validation middleware factory
  */
-export const validate = (schema: Joi.ObjectSchema, source: 'body' | 'params' | 'query' = 'body') => {
+export const validate = (
+  schema: Joi.ObjectSchema,
+  source: 'body' | 'params' | 'query' = 'body'
+) => {
   return (req: Request, _res: Response, next: NextFunction): void => {
     const dataToValidate = req[source];
 

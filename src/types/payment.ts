@@ -1,4 +1,5 @@
-export type PaymentStatus = 'created' | 'pending' | 'authorized' | 'captured' | 'failed' | 'refunded';
+export type PaymentStatus =
+  'created' | 'pending' | 'authorized' | 'captured' | 'failed' | 'refunded';
 export type PaymentMethod = 'upi' | 'card' | 'netbanking' | 'wallet' | 'mock';
 
 export interface PaymentOrder {

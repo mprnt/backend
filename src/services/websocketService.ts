@@ -58,11 +58,13 @@ export class WebSocketService {
     }
     this.subscriptions.get(jobId)!.add(clientId);
 
-    ws.send(JSON.stringify({
-      type: 'subscribed',
-      jobId,
-      message: `Subscribed to job ${jobId}`,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: 'subscribed',
+        jobId,
+        message: `Subscribed to job ${jobId}`,
+      })
+    );
 
     logger.info('Client subscribed to job', { clientId, jobId });
   }

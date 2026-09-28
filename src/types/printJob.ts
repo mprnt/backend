@@ -3,7 +3,8 @@ export type PageRange = 'all' | 'custom';
 export type PrintSides = 'single' | 'double';
 export type PaperSize = 'a4' | 'letter';
 export type Orientation = 'portrait' | 'landscape';
-export type PrintJobStatus = 'pending' | 'queued' | 'printing' | 'completed' | 'failed' | 'cancelled';
+export type PrintJobStatus =
+  'pending' | 'queued' | 'printing' | 'completed' | 'failed' | 'cancelled';
 
 export interface PrintSettings {
   colorMode: ColorMode;

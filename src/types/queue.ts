@@ -1,5 +1,6 @@
 export type PrinterStatus = 'online' | 'offline' | 'busy' | 'error' | 'maintenance';
-export type JobQueueStatus = 'queued' | 'assigned' | 'printing' | 'completed' | 'failed' | 'cancelled';
+export type JobQueueStatus =
+  'queued' | 'assigned' | 'printing' | 'completed' | 'failed' | 'cancelled';
 
 export interface Printer {
   id: string;

@@ -150,7 +150,7 @@ export class JobAssignmentService {
 
     const result = await this.database.query(query, params);
 
-    return result.rows.map(row => ({
+    return result.rows.map((row) => ({
       jobId: row.id,
       printerId: row.printer_id,
       status: row.status,
