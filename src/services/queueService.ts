@@ -172,8 +172,8 @@ export class QueueService {
           status = 'assigned',
           assigned_at = NOW(),
           updated_at = NOW()
-         WHERE id = $2`,
-        [printerId, job.id]
+         WHERE job_id = $2`,
+        [printerId, job.job_id]
       );
 
       // Update print job status
@@ -357,10 +357,10 @@ export class QueueService {
     try {
       const result = await this.database.query(
         `SELECT
-          id, status, printed_pages, error_message,
+          job_id, status, error_message,
           started_at, completed_at, failed_at
          FROM print_queue
-         WHERE id = $1`,
+         WHERE job_id = $1`,
         [jobId]
       );
 
@@ -370,9 +370,8 @@ export class QueueService {
 
       const row = result.rows[0];
       return {
-        jobId: row.id,
+        jobId: row.job_id,
         status: row.status,
-        printedPages: row.printed_pages,
         errorMessage: row.error_message,
         startedAt: row.started_at,
         completedAt: row.completed_at,
