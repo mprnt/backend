@@ -62,7 +62,7 @@ export class JobAssignmentService {
     await this.database.query(
       `UPDATE print_queue
        SET printer_id = $1, status = 'assigned', assigned_at = NOW(), updated_at = NOW()
-       WHERE id = $2`,
+       WHERE job_id = $2`,
       [selectedPrinter.id, jobId]
     );
 
@@ -135,7 +135,7 @@ export class JobAssignmentService {
    * Get all pending jobs in queue (unassigned)
    */
   async getPendingJobs(kioskId?: string): Promise<QueuedJob[]> {
-    let query = `SELECT pq.id, pq.printer_id, pq.status, pj.color_mode, pj.print_sides, pj.total_pages, pj.kiosk_id, pq.created_at
+    let query = `SELECT pq.job_id, pq.printer_id, pq.status, pj.color_mode, pj.print_sides, pj.total_pages, pj.kiosk_id, pq.created_at
                  FROM print_queue pq
                  JOIN print_jobs pj ON pq.job_id = pj.id
                  WHERE pq.status = 'queued'`;
@@ -151,7 +151,7 @@ export class JobAssignmentService {
     const result = await this.database.query(query, params);
 
     return result.rows.map((row) => ({
-      jobId: row.id,
+      jobId: row.job_id,
       printerId: row.printer_id,
       status: row.status,
       colorMode: row.color_mode === 'color' ? 'color' : 'bw',
