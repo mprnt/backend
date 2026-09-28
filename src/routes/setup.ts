@@ -1,9 +1,28 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { db } from '../config/database';
+import env from '../config/environment';
+import { AppError } from '../utils/errors';
 import { asyncHandler } from '../utils/asyncHandler';
 import logger from '../utils/logger';
 
 const router = Router();
+
+/**
+ * Guards the endpoints that execute DDL and seed data. Those are a development
+ * convenience and must never be reachable in production, where schema changes
+ * belong to the migration scripts.
+ *
+ * Applied per-route, not to the whole router: `GET /setup/kiosks` is a read-only
+ * listing the kiosk selector in the frontend depends on, and must keep working.
+ */
+const developmentOnly = (req: Request, _res: Response, next: NextFunction): void => {
+  if (env.node_env === 'production') {
+    logger.warn('Blocked setup endpoint in production', { path: req.path, ip: req.ip });
+    next(new AppError('Not found', 404));
+    return;
+  }
+  next();
+};
 
 /**
  * @swagger
@@ -18,6 +37,7 @@ const router = Router();
  */
 router.post(
   '/kiosks',
+  developmentOnly,
   asyncHandler(async (_req: Request, res: Response) => {
     logger.info('Setting up kiosks table');
 

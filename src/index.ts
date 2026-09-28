@@ -2,7 +2,7 @@ import app from './app';
 import env from './config/environment';
 import logger from './utils/logger';
 import { scheduleSessionExpiryJob } from './jobs/sessionExpiryJob';
-import { scheduleJobAssignmentJob } from './jobs/jobAssignmentJob';
+import { schedulePrinterReaper, stopPrinterReaper } from './jobs/printerReaperJob';
 import { sessionExpiryQueue } from './queues/sessionExpiryQueue';
 import { documentQueue } from './queues/documentQueue';
 import { documentProcessor } from './workers/documentProcessor';
@@ -28,13 +28,16 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
   // Start background jobs
   scheduleSessionExpiryJob();
-  scheduleJobAssignmentJob();
+  schedulePrinterReaper();
   logger.info('⏰ Background jobs started');
 });
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
   logger.info(`${signal} received. Starting graceful shutdown...`);
+
+  // Stop background sweeps before tearing down the pool
+  stopPrinterReaper();
 
   // Close HTTP server
   server.close(() => {

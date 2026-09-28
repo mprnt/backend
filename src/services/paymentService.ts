@@ -11,6 +11,7 @@ import {
 import logger from '../utils/logger';
 import { RazorpayService } from './razorpayService';
 import { websocketService } from './websocketService';
+import { queueService } from './queueService';
 
 /**
  * Payment Service
@@ -203,6 +204,11 @@ export class PaymentService {
          WHERE id = $3`,
         ['paid', 'queued', order.job_id]
       );
+
+      // 6. Put the job into the print queue inside the same transaction.
+      //    Without this row no printer can ever see the job, so payment and
+      //    queue entry must succeed or fail together.
+      await queueService.enqueueJob(order.job_id, 0, client);
 
       await client.query('COMMIT');
 

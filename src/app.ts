@@ -16,7 +16,6 @@ import documentRoutesStandalone from './routes/documentRoutes';
 import printJobRoutes from './routes/printJobs';
 import paymentRoutes from './routes/payment';
 import queueRoutes from './routes/queue';
-import printerRoutes from './routes/printerApi';
 import setupRoutes from './routes/setup';
 
 const app: Application = express();
@@ -103,7 +102,6 @@ app.use(`/api/${env.api_version}/sessions`, printJobRoutes);
 app.use(`/api/${env.api_version}`, printJobRoutes);
 app.use(`/api/${env.api_version}`, paymentRoutes);
 app.use(`/api/${env.api_version}/queue`, queueRoutes);
-app.use(`/api/${env.api_version}/printer`, printerRoutes);
 app.use(`/api/${env.api_version}/documents`, documentRoutesStandalone);
 app.use(`/api/${env.api_version}/setup`, setupRoutes);
 

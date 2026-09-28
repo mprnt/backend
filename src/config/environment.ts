@@ -71,6 +71,12 @@ interface Environment {
     port: number;
     path: string;
   };
+  printer: {
+    provisioning_token: string;
+    job_lease_seconds: number;
+    document_url_ttl_seconds: number;
+    heartbeat_timeout_seconds: number;
+  };
 }
 
 function parseRedisFromEnv(): Environment['redis'] {
@@ -170,6 +176,28 @@ const env: Environment = {
     port: parseInt(process.env.WS_PORT || '3001', 10),
     path: process.env.WS_PATH || '/api/v1/ws',
   },
+  printer: {
+    // Shared secret a Raspberry Pi presents once to enroll itself and receive its own API key.
+    provisioning_token: process.env.PRINTER_PROVISIONING_TOKEN || '',
+    // How long a printer may hold a claimed job before the reaper requeues it.
+    job_lease_seconds: parseInt(process.env.PRINTER_JOB_LEASE_SECONDS || '900', 10),
+    // Lifetime of the pre-signed S3 URL handed to the Pi. Short by design.
+    document_url_ttl_seconds: parseInt(process.env.PRINTER_DOCUMENT_URL_TTL_SECONDS || '900', 10),
+    // No heartbeat for this long => printer marked offline and stops receiving jobs.
+    heartbeat_timeout_seconds: parseInt(process.env.PRINTER_HEARTBEAT_TIMEOUT_SECONDS || '180', 10),
+  },
 };
+
+if (env.node_env === 'production') {
+  const missing: string[] = [];
+  if (!env.printer.provisioning_token) missing.push('PRINTER_PROVISIONING_TOKEN');
+  if (env.jwt.secret === 'change_this_secret') missing.push('JWT_SECRET');
+  if (missing.length > 0) {
+    throw new Error(
+      `Refusing to start in production without: ${missing.join(', ')}. ` +
+        'These guard the printer enrollment and admin endpoints.'
+    );
+  }
+}
 
 export default env;
