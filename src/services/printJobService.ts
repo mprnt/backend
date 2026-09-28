@@ -82,7 +82,11 @@ export class PrintJobService {
       }
 
       // 4. Calculate pricing
-      const pricing = await pricingService.calculatePrice(params.settings, document.page_count);
+      const pricing = await pricingService.calculatePrice(
+        params.settings,
+        document.page_count,
+        params.kioskId
+      );
 
       // 5. Create print job
       const jobId = uuidv4();
@@ -226,7 +230,11 @@ export class PrintJobService {
       };
 
       // 4. Recalculate pricing
-      const pricing = await pricingService.calculatePrice(newSettings, existingJob.page_count);
+      const pricing = await pricingService.calculatePrice(
+        newSettings,
+        existingJob.page_count,
+        existingJob.kiosk_id
+      );
 
       // 5. Update job
       const updateResult = await client.query(

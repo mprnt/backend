@@ -44,7 +44,8 @@ describe('Session Expiry Job', () => {
 
       // Mock transaction
       const mockClient = {
-        query: jest.fn()
+        query: jest
+          .fn()
           .mockResolvedValueOnce({ rows: mockDocuments }) // Find documents
           .mockResolvedValueOnce({ rows: [] }) // Delete documents
           .mockResolvedValueOnce({ rows: [] }), // Update session
@@ -97,7 +98,8 @@ describe('Session Expiry Job', () => {
 
       // Mock transaction with no documents
       const mockClient = {
-        query: jest.fn()
+        query: jest
+          .fn()
           .mockResolvedValueOnce({ rows: [] }) // No documents found
           .mockResolvedValueOnce({ rows: [] }), // Update session
       };
@@ -143,7 +145,8 @@ describe('Session Expiry Job', () => {
         .mockRejectedValueOnce(new Error('Database error'))
         .mockImplementation(async (callback) => {
           const mockClient = {
-            query: jest.fn()
+            query: jest
+              .fn()
               .mockResolvedValueOnce({ rows: [] }) // No documents
               .mockResolvedValueOnce({ rows: [] }), // Update session
           };

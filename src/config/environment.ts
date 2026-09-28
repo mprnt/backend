@@ -71,6 +71,12 @@ interface Environment {
     port: number;
     path: string;
   };
+  admin: {
+    access_token_ttl: string;
+    access_token_ttl_seconds: number;
+    refresh_token_ttl_seconds: number;
+    login_rate_limit_max: number;
+  };
   printer: {
     provisioning_token: string;
     job_lease_seconds: number;
@@ -175,6 +181,17 @@ const env: Environment = {
   websocket: {
     port: parseInt(process.env.WS_PORT || '3001', 10),
     path: process.env.WS_PATH || '/api/v1/ws',
+  },
+  admin: {
+    // Short-lived so a leaked access token has a small blast radius.
+    access_token_ttl: process.env.ADMIN_ACCESS_TOKEN_TTL || '15m',
+    access_token_ttl_seconds: parseInt(process.env.ADMIN_ACCESS_TOKEN_TTL_SECONDS || '900', 10),
+    // Refresh tokens are revocable, so they can safely live much longer.
+    refresh_token_ttl_seconds: parseInt(
+      process.env.ADMIN_REFRESH_TOKEN_TTL_SECONDS || String(7 * 24 * 3600),
+      10
+    ),
+    login_rate_limit_max: parseInt(process.env.ADMIN_LOGIN_RATE_LIMIT_MAX || '10', 10),
   },
   printer: {
     // Shared secret a Raspberry Pi presents once to enroll itself and receive its own API key.
