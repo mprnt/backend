@@ -93,9 +93,9 @@ describe('SessionService', () => {
         fields: [],
       });
 
-      await expect(
-        sessionService.createSession('M001', '127.0.0.1', 'test-agent')
-      ).rejects.toThrow(AppError);
+      await expect(sessionService.createSession('M001', '127.0.0.1', 'test-agent')).rejects.toThrow(
+        AppError
+      );
     });
 
     it('should generate unique session IDs', async () => {
@@ -472,7 +472,11 @@ describe('SessionService', () => {
       });
 
       // Mock update session
-      const cancelledSession = { ...mockSession, status: 'expired' as const, completed_at: new Date() };
+      const cancelledSession = {
+        ...mockSession,
+        status: 'expired' as const,
+        completed_at: new Date(),
+      };
       mockDb.query.mockResolvedValueOnce({
         rows: [cancelledSession],
         command: 'UPDATE',

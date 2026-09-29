@@ -346,9 +346,7 @@ describe('QueueService', () => {
 
   describe('reclaimExpiredLeases', () => {
     it('requeues jobs whose printer stopped reporting', async () => {
-      mockDb.query.mockResolvedValueOnce(
-        result([{ job_id: 'job-1', status: 'queued' }], 1) as any
-      );
+      mockDb.query.mockResolvedValueOnce(result([{ job_id: 'job-1', status: 'queued' }], 1) as any);
       mockDb.query.mockResolvedValueOnce(result([]) as any);
 
       await expect(service.reclaimExpiredLeases()).resolves.toBe(1);

@@ -3,6 +3,7 @@ import env from './config/environment';
 import logger from './utils/logger';
 import { scheduleSessionExpiryJob } from './jobs/sessionExpiryJob';
 import { schedulePrinterReaper, stopPrinterReaper } from './jobs/printerReaperJob';
+import { scheduleDailyStatsRollup, stopDailyStatsRollup } from './jobs/dailyStatsRollupJob';
 import { sessionExpiryQueue } from './queues/sessionExpiryQueue';
 import { documentQueue } from './queues/documentQueue';
 import { documentProcessor } from './workers/documentProcessor';
@@ -29,6 +30,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   // Start background jobs
   scheduleSessionExpiryJob();
   schedulePrinterReaper();
+  scheduleDailyStatsRollup();
   logger.info('⏰ Background jobs started');
 });
 
@@ -38,6 +40,7 @@ const gracefulShutdown = async (signal: string) => {
 
   // Stop background sweeps before tearing down the pool
   stopPrinterReaper();
+  stopDailyStatsRollup();
 
   // Close HTTP server
   server.close(() => {

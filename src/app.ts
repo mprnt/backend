@@ -17,6 +17,7 @@ import printJobRoutes from './routes/printJobs';
 import paymentRoutes from './routes/payment';
 import queueRoutes from './routes/queue';
 import setupRoutes from './routes/setup';
+import adminRoutes from './routes/admin';
 
 const app: Application = express();
 app.set('trust proxy', 1);
@@ -104,6 +105,7 @@ app.use(`/api/${env.api_version}`, paymentRoutes);
 app.use(`/api/${env.api_version}/queue`, queueRoutes);
 app.use(`/api/${env.api_version}/documents`, documentRoutesStandalone);
 app.use(`/api/${env.api_version}/setup`, setupRoutes);
+app.use(`/api/${env.api_version}/admin`, adminRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

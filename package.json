@@ -22,7 +22,8 @@
     "migrate:up": "node-pg-migrate up",
     "migrate:down": "node-pg-migrate down",
     "migrate:create": "node-pg-migrate create",
-    "migrate:sql": "ts-node scripts/run-migration.ts"
+    "migrate:sql": "ts-node scripts/run-migration.ts",
+    "create-super-admin": "ts-node scripts/create-super-admin.ts"
   },
   "keywords": [
     "printing",
