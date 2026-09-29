@@ -16,12 +16,28 @@ export async function processSessionExpiry(_job: Job): Promise<{
   logger.info('Starting session expiry job');
 
   try {
-    // Find all expired sessions that are not already marked as expired
+    // Find expired sessions that are safe to clean up.
+    //
+    // A session whose customer has paid but whose job has not finished is
+    // skipped entirely — not marked expired either, so it is re-evaluated on
+    // the next sweep and cleaned up once the job reaches a terminal state.
+    //
+    // This matters because the cleanup deletes the uploaded file from S3. A
+    // paid job whose document has been deleted can never print: the Pi
+    // downloads that exact object. Retaining a file for longer than the session
+    // window is the lesser problem by a wide margin.
     const expiredSessionsResult = await db.query(
       `SELECT ps.id, ps.session_id, ps.expires_at, ps.status
        FROM print_sessions ps
        WHERE ps.expires_at < CURRENT_TIMESTAMP
          AND ps.status NOT IN ('expired', 'complete')
+         AND NOT EXISTS (
+           SELECT 1
+             FROM print_jobs pj
+            WHERE pj.session_id = ps.id
+              AND pj.payment_status = 'paid'
+              AND pj.status NOT IN ('completed', 'cancelled')
+         )
        ORDER BY ps.expires_at ASC`
     );
 
@@ -70,17 +86,15 @@ export async function processSessionExpiry(_job: Job): Promise<{
               }
             }
 
-            // Remove payment orders before document deletion for databases created
-            // with the legacy duplicate foreign key constraint.
-            await client.query(
-              `DELETE FROM payment_orders
-               WHERE job_id IN (
-                 SELECT id FROM print_jobs WHERE document_id = ANY($1::uuid[])
-               )`,
-              [documents.map((document: any) => document.id)]
-            );
+            // NOTE: this previously deleted the session's payment_orders first,
+            // to work around a foreign key. That is now removed — deleting
+            // payment records as part of a privacy cleanup is exactly the bug
+            // that wiped every transaction in production. Migration 013 changed
+            // the constraints so a document delete no longer reaches them:
+            // print_jobs.document_id is SET NULL, and payment rows are RESTRICT.
 
-            // Mark documents as deleted in database
+            // Delete the document rows. Any job still referencing one simply
+            // has its document_id cleared; the job and its payments survive.
             await client.query('DELETE FROM documents WHERE session_id = $1', [session.id]);
 
             documentsDeleted += documents.length;
