@@ -1,6 +1,5 @@
 import { processSessionExpiry } from '../../src/jobs/sessionExpiryJob';
 import { db } from '../../src/config/database';
-import { Job } from 'bull';
 
 // Mock database
 jest.mock('../../src/config/database');
@@ -55,8 +54,7 @@ describe('Session Expiry Job', () => {
         return await callback(mockClient as any);
       });
 
-      const mockJob = {} as Job;
-      const result = await processSessionExpiry(mockJob);
+      const result = await processSessionExpiry();
 
       expect(result.expiredCount).toBe(2);
       expect(result.documentsDeleted).toBe(2);
@@ -72,8 +70,7 @@ describe('Session Expiry Job', () => {
         fields: [],
       });
 
-      const mockJob = {} as Job;
-      const result = await processSessionExpiry(mockJob);
+      const result = await processSessionExpiry();
 
       expect(result.expiredCount).toBe(0);
       expect(result.documentsDeleted).toBe(0);
@@ -108,8 +105,7 @@ describe('Session Expiry Job', () => {
         return await callback(mockClient as any);
       });
 
-      const mockJob = {} as Job;
-      const result = await processSessionExpiry(mockJob);
+      const result = await processSessionExpiry();
 
       expect(result.expiredCount).toBe(1);
       expect(result.documentsDeleted).toBe(0);
@@ -153,8 +149,7 @@ describe('Session Expiry Job', () => {
           return await callback(mockClient as any);
         });
 
-      const mockJob = {} as Job;
-      const result = await processSessionExpiry(mockJob);
+      const result = await processSessionExpiry();
 
       // Should still report both sessions (attempted to process)
       expect(result.expiredCount).toBe(2);
@@ -170,8 +165,7 @@ describe('Session Expiry Job', () => {
         fields: [],
       });
 
-      const mockJob = {} as Job;
-      const result = await processSessionExpiry(mockJob);
+      const result = await processSessionExpiry();
 
       expect(result.expiredCount).toBe(0);
       expect(mockDb.transaction).not.toHaveBeenCalled();
@@ -181,9 +175,8 @@ describe('Session Expiry Job', () => {
       // Mock database error
       mockDb.query.mockRejectedValueOnce(new Error('Database connection failed'));
 
-      const mockJob = {} as Job;
 
-      await expect(processSessionExpiry(mockJob)).rejects.toThrow('Database connection failed');
+      await expect(processSessionExpiry()).rejects.toThrow('Database connection failed');
     });
   });
 });

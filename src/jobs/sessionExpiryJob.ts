@@ -1,13 +1,12 @@
-import { Job } from 'bull';
 import { db } from '../config/database';
 import logger from '../utils/logger';
-import { sessionExpiryQueue } from '../queues/sessionExpiryQueue';
+import { withAdvisoryLock, LOCKS } from '../utils/advisoryLock';
 
 /**
  * Process expired sessions
  * This job runs every minute to find and clean up expired sessions
  */
-export async function processSessionExpiry(_job: Job): Promise<{
+export async function processSessionExpiry(): Promise<{
   expiredCount: number;
   documentsDeleted: number;
 }> {
@@ -143,29 +142,48 @@ export async function processSessionExpiry(_job: Job): Promise<{
   }
 }
 
+const INTERVAL_MS = 60_000;
+let timer: NodeJS.Timeout | undefined;
+
 /**
- * Schedule the session expiry job to run every minute
+ * One guarded pass. Never throws: a failed sweep is logged and retried on the
+ * next tick, and must not take the process down with it.
+ */
+export async function runSessionExpiry(): Promise<void> {
+  try {
+    await withAdvisoryLock(LOCKS.SESSION_EXPIRY, processSessionExpiry);
+  } catch (error) {
+    logger.error('Session expiry sweep failed', {
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
+
+/**
+ * Run the session sweep every minute.
+ *
+ * This used to be a Bull repeatable job, which kept Redis busy around the
+ * clock just to trigger one SQL query a minute — enough on its own to exhaust
+ * a hosted Redis free tier, whose quota error then crashed the API. A timer
+ * plus a Postgres advisory lock does the same job with nothing extra to run.
  */
 export function scheduleSessionExpiryJob(): void {
-  // Add repeating job that runs every minute
-  sessionExpiryQueue.add(
-    'expire-sessions',
-    {},
-    {
-      repeat: {
-        cron: '* * * * *', // Every minute
-      },
-      jobId: 'session-expiry-recurring',
-    }
-  );
+  if (timer) return;
+
+  // First pass shortly after boot, then every minute.
+  setTimeout(() => void runSessionExpiry(), 10_000).unref();
+  timer = setInterval(() => void runSessionExpiry(), INTERVAL_MS);
+  timer.unref();
 
   logger.info('Session expiry job scheduled (runs every minute)');
 }
 
-/**
- * Process jobs from the queue
- */
-sessionExpiryQueue.process('expire-sessions', processSessionExpiry);
+export function stopSessionExpiryJob(): void {
+  if (timer) {
+    clearInterval(timer);
+    timer = undefined;
+  }
+}
 
 /**
  * Manually trigger session expiry (useful for testing)
@@ -173,9 +191,7 @@ sessionExpiryQueue.process('expire-sessions', processSessionExpiry);
 export async function triggerSessionExpiry(): Promise<{
   expiredCount: number;
   documentsDeleted: number;
-}> {
+} | null> {
   logger.info('Manually triggering session expiry job');
-  const job = await sessionExpiryQueue.add('expire-sessions', {});
-  const result = await job.finished();
-  return result as { expiredCount: number; documentsDeleted: number };
+  return withAdvisoryLock(LOCKS.SESSION_EXPIRY, processSessionExpiry);
 }
