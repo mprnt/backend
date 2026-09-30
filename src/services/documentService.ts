@@ -4,7 +4,7 @@ import { sessionService } from './sessionService';
 import { AppError } from '../middleware/errorHandler';
 import logger from '../utils/logger';
 import crypto from 'crypto';
-import { addDocumentProcessingJob } from '../queues/documentQueue';
+import { enqueueDocumentProcessing } from '../jobs/documentJobs';
 import { cacheService, CacheKeys } from './cacheService';
 import { PDFParse } from 'pdf-parse';
 
@@ -124,24 +124,15 @@ export class DocumentService {
         processed: isProcessed,
       });
 
-      try {
-        await addDocumentProcessingJob({
-          documentId: document.id,
-          sessionId,
-          s3Key,
-          fileType: file.mimetype,
-          originalFilename: file.originalname,
-        });
-
-        logger.info('Document queued for processing', {
-          documentId: document.id,
-        });
-      } catch (queueError) {
-        logger.error('Failed to queue document processing job', {
-          documentId: document.id,
-          error: queueError instanceof Error ? queueError.message : queueError,
-        });
-      }
+      // Runs in the background; the upload response does not wait for it, and
+      // it cannot fail the upload.
+      enqueueDocumentProcessing({
+        documentId: document.id,
+        sessionId,
+        s3Key,
+        fileType: file.mimetype,
+        originalFilename: file.originalname,
+      });
 
       return document;
     } catch (error) {
@@ -238,7 +229,7 @@ export class DocumentService {
   }
 
   /**
-   * Get document preview with thumbnails (with Redis caching)
+   * Get document preview with thumbnails (cached in memory for a few minutes)
    */
   async getDocumentPreview(documentId: string): Promise<{
     documentId: string;

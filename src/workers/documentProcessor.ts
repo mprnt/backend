@@ -1,11 +1,10 @@
-import { Job } from 'bull';
 import { db } from '../config/database';
 import { storageService } from '../services/storageService';
 import logger from '../utils/logger';
 import sharp from 'sharp';
 import { PDFParse } from 'pdf-parse';
 
-interface DocumentJobData {
+export interface DocumentJobData {
   documentId: string;
   sessionId: string;
   s3Key: string;
@@ -90,12 +89,12 @@ export class DocumentProcessor {
   /**
    * Process document job
    */
-  async process(job: Job<DocumentJobData>): Promise<ProcessingResult> {
+  async process(data: DocumentJobData, attempt = 1): Promise<ProcessingResult> {
     const startTime = Date.now();
-    const { documentId, s3Key, fileType, originalFilename } = job.data;
+    const { documentId, s3Key, fileType, originalFilename } = data;
 
     logger.info('Starting document processing', {
-      jobId: job.id,
+      attempt,
       documentId,
       fileType,
       originalFilename,
@@ -138,7 +137,7 @@ export class DocumentProcessor {
       const processingTime = Date.now() - startTime;
 
       logger.info('Document processing completed successfully', {
-        jobId: job.id,
+        attempt,
         documentId,
         pageCount,
         thumbnailGenerated,
@@ -153,7 +152,7 @@ export class DocumentProcessor {
       };
     } catch (error) {
       logger.error('Document processing failed', {
-        jobId: job.id,
+        attempt,
         documentId,
         error: error instanceof Error ? error.message : error,
       });

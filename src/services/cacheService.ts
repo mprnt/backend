@@ -1,198 +1,109 @@
-import { createClient, RedisClientType } from 'redis';
-import env from '../config/environment';
 import logger from '../utils/logger';
 
 /**
- * Redis Cache Service
- * Handles caching for application data
+ * In-process cache with per-entry TTL.
+ *
+ * Previously backed by Redis. Its only use is caching document previews for a
+ * few minutes, which does not justify a separate service — especially one
+ * whose quota exhaustion took the whole API down. The interface is unchanged,
+ * so callers did not need to change.
+ *
+ * Trade-offs worth knowing:
+ *  - Each instance has its own cache. With one instance (today) that is
+ *    identical in behaviour. With several, a preview may be computed once per
+ *    instance — harmless, as previews are derived from immutable documents.
+ *  - A restart empties it. Entries are short-lived anyway.
+ *  - Size is bounded: past MAX_ENTRIES the oldest entry is evicted, so memory
+ *    cannot grow without limit under load.
  */
+
+const MAX_ENTRIES = 1000;
+const SWEEP_INTERVAL_MS = 60_000;
+
+interface Entry {
+  value: string;
+  expiresAt: number;
+}
+
 class CacheService {
-  private client: RedisClientType;
-  private connected: boolean = false;
+  private store = new Map<string, Entry>();
+  private sweeper: NodeJS.Timeout;
 
   constructor() {
-    this.client = process.env.REDIS_URL
-      ? createClient({ url: env.redis.url })
-      : createClient({
-          socket: {
-            host: env.redis.host,
-            port: env.redis.port,
-          },
-          password: env.redis.password || undefined,
-        });
-
-    this.client.on('error', (err) => {
-      logger.error('Redis cache client error', { error: err.message });
-      this.connected = false;
-    });
-
-    this.client.on('connect', () => {
-      logger.info('Redis cache client connected');
-      this.connected = true;
-    });
-
-    this.client.on('disconnect', () => {
-      logger.warn('Redis cache client disconnected');
-      this.connected = false;
-    });
-
-    // Connect to Redis
-    this.connect();
+    // Drop expired entries periodically, so memory is reclaimed even for keys
+    // that are never read again.
+    this.sweeper = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS);
+    this.sweeper.unref();
   }
 
-  private async connect() {
-    try {
-      await this.client.connect();
-    } catch (error) {
-      logger.error('Failed to connect to Redis cache', {
-        error: error instanceof Error ? error.message : error,
-      });
+  private sweep(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.store) {
+      if (entry.expiresAt <= now) this.store.delete(key);
     }
   }
 
-  /**
-   * Get value from cache
-   */
+  private live(key: string): Entry | null {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry;
+  }
+
   async get<T>(key: string): Promise<T | null> {
-    if (!this.connected) {
-      logger.warn('Cache not connected, skipping get');
-      return null;
-    }
+    const entry = this.live(key);
+    if (!entry) return null;
 
     try {
-      const value = await this.client.get(key);
-      if (!value) return null;
-
       logger.debug('Cache hit', { key });
-      return JSON.parse(value) as T;
-    } catch (error) {
-      logger.error('Cache get error', {
-        key,
-        error: error instanceof Error ? error.message : error,
-      });
+      return JSON.parse(entry.value) as T;
+    } catch {
+      this.store.delete(key);
       return null;
     }
   }
 
-  /**
-   * Set value in cache with TTL
-   */
   async set(key: string, value: unknown, ttlSeconds: number = 300): Promise<void> {
-    if (!this.connected) {
-      logger.warn('Cache not connected, skipping set');
-      return;
+    // Serialised on write, as Redis did, so a cached object can never be mutated
+    // through a reference held by a caller.
+    const serialised = JSON.stringify(value);
+
+    // Re-inserting moves the key to the end of the Map's insertion order.
+    this.store.delete(key);
+    this.store.set(key, { value: serialised, expiresAt: Date.now() + ttlSeconds * 1000 });
+
+    if (this.store.size > MAX_ENTRIES) {
+      const oldest = this.store.keys().next().value;
+      if (oldest !== undefined) this.store.delete(oldest);
     }
 
-    try {
-      await this.client.setEx(key, ttlSeconds, JSON.stringify(value));
-      logger.debug('Cache set', { key, ttl: ttlSeconds });
-    } catch (error) {
-      logger.error('Cache set error', {
-        key,
-        error: error instanceof Error ? error.message : error,
-      });
-    }
+    logger.debug('Cache set', { key, ttl: ttlSeconds });
   }
 
-  /**
-   * Delete value from cache
-   */
   async del(key: string | string[]): Promise<void> {
-    if (!this.connected) {
-      logger.warn('Cache not connected, skipping delete');
-      return;
-    }
-
-    try {
-      const keys = Array.isArray(key) ? key : [key];
-      await this.client.del(keys);
-      logger.debug('Cache deleted', { keys });
-    } catch (error) {
-      logger.error('Cache delete error', {
-        key,
-        error: error instanceof Error ? error.message : error,
-      });
-    }
+    for (const k of Array.isArray(key) ? key : [key]) this.store.delete(k);
   }
 
-  /**
-   * Check if key exists in cache
-   */
   async exists(key: string): Promise<boolean> {
-    if (!this.connected) {
-      return false;
-    }
-
-    try {
-      const exists = await this.client.exists(key);
-      return exists === 1;
-    } catch (error) {
-      logger.error('Cache exists error', {
-        key,
-        error: error instanceof Error ? error.message : error,
-      });
-      return false;
-    }
+    return this.live(key) !== null;
   }
 
-  /**
-   * Clear all cache (use with caution)
-   */
   async flush(): Promise<void> {
-    if (!this.connected) {
-      logger.warn('Cache not connected, skipping flush');
-      return;
-    }
-
-    try {
-      await this.client.flushDb();
-      logger.info('Cache flushed');
-    } catch (error) {
-      logger.error('Cache flush error', {
-        error: error instanceof Error ? error.message : error,
-      });
-    }
+    this.store.clear();
+    logger.info('Cache flushed');
   }
 
-  /**
-   * Get cache statistics
-   */
-  async getStats(): Promise<{
-    connected: boolean;
-    dbSize: number;
-    memory: string;
-  } | null> {
-    if (!this.connected) {
-      return null;
-    }
-
-    try {
-      const dbSize = await this.client.dbSize();
-      const info = await this.client.info('memory');
-      const memoryMatch = info.match(/used_memory_human:(.+)/);
-      const memory = memoryMatch ? memoryMatch[1].trim() : 'unknown';
-
-      return {
-        connected: this.connected,
-        dbSize,
-        memory,
-      };
-    } catch (error) {
-      logger.error('Cache stats error', {
-        error: error instanceof Error ? error.message : error,
-      });
-      return null;
-    }
+  async getStats(): Promise<{ connected: boolean; dbSize: number; memory: string }> {
+    this.sweep();
+    return { connected: true, dbSize: this.store.size, memory: 'in-process' };
   }
 
-  /**
-   * Close cache connection
-   */
   async close(): Promise<void> {
-    if (this.connected) {
-      await this.client.quit();
-      logger.info('Redis cache client closed');
-    }
+    clearInterval(this.sweeper);
+    this.store.clear();
   }
 }
 
