@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { queueService } from '../services/queueService';
 import { printerAuthService } from '../services/printerAuthService';
-import { AppError } from '../utils/errors';
+import { fleetService } from '../services/fleetService';
+import { auditService } from '../services/auditService';
 import { PrinterHeartbeat } from '../types/queue';
 import logger from '../utils/logger';
 
@@ -15,22 +16,27 @@ class QueueController {
   async enrollPrinter(req: Request, res: Response): Promise<void> {
     const { printerId, kioskId, name, capabilities, ipAddress } = req.body;
 
-    const printer = await queueService.registerPrinter({
+    // Shared with dashboard enrollment. Checks for an existing printer id before
+    // writing anything, so a rejected re-enrollment no longer mutates the
+    // printer it was rejected for.
+    const issued = await fleetService.enrollPrinter({
       printerId,
-      kioskId,
+      kioskUuid: kioskId,
       name,
       capabilities,
       ipAddress,
     });
 
-    const issued = await printerAuthService.issueApiKeyIfAbsent(printer.id);
-
-    if (!issued) {
-      throw new AppError(
-        'This printer is already enrolled. Rotate its key instead of re-enrolling.',
-        409
-      );
-    }
+    await auditService.record({
+      actorId: null,
+      actorScope: 'platform',
+      organizationId: issued.organizationId,
+      action: 'printer.enrolled',
+      resourceType: 'printer',
+      details: { printerId, via: 'provisioning_token' },
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
 
     logger.info('Printer enrolled', { printerId, kioskId, ip: req.ip });
 
@@ -42,8 +48,8 @@ class QueueController {
         apiKey: issued.apiKey,
         keyPrefix: issued.prefix,
         issuedAt: issued.issuedAt,
-        kioskId: printer.kioskId,
-        capabilities: printer.capabilities,
+        kioskId,
+        capabilities,
       },
     });
   }
@@ -180,91 +186,6 @@ class QueueController {
     res.json({
       status: 'success',
       data: job,
-    });
-  }
-
-  /**
-   * GET /api/v1/queue/status
-   * Queue statistics (admin).
-   */
-  async getQueueStatus(_req: Request, res: Response): Promise<void> {
-    const stats = await queueService.getQueueStatus();
-
-    res.json({
-      status: 'success',
-      data: {
-        queue: stats,
-        timestamp: new Date().toISOString(),
-      },
-    });
-  }
-
-  /**
-   * GET /api/v1/queue/printers
-   * Registered printers (admin).
-   */
-  async getPrinters(req: Request, res: Response): Promise<void> {
-    const { kioskId } = req.query;
-
-    const printers = await queueService.getPrinters(kioskId as string);
-
-    res.json({
-      status: 'success',
-      data: {
-        count: printers.length,
-        printers: printers.map((p) => ({
-          printerId: p.printerId,
-          name: p.name,
-          status: p.status,
-          kioskId: p.kioskId,
-          ipAddress: p.ipAddress,
-          lastHeartbeat: p.lastHeartbeat,
-          capabilities: p.capabilities,
-        })),
-      },
-    });
-  }
-
-  /**
-   * POST /api/v1/queue/printers/:printerId/rotate-key (admin)
-   */
-  async rotateKey(req: Request, res: Response): Promise<void> {
-    const { printerId } = req.params;
-
-    const issued = await printerAuthService.rotateApiKey(printerId);
-
-    if (!issued) {
-      throw new AppError('Printer not found', 404);
-    }
-
-    res.json({
-      status: 'success',
-      message: 'API key rotated. The previous key is now invalid.',
-      data: {
-        printerId: issued.printerId,
-        apiKey: issued.apiKey,
-        keyPrefix: issued.prefix,
-        issuedAt: issued.issuedAt,
-      },
-    });
-  }
-
-  /**
-   * POST /api/v1/queue/printers/:printerId/revoke (admin)
-   */
-  async revokeKey(req: Request, res: Response): Promise<void> {
-    const { printerId } = req.params;
-
-    const revoked = await printerAuthService.revoke(printerId);
-
-    if (!revoked) {
-      throw new AppError('Printer not found or already revoked', 404);
-    }
-
-    res.json({
-      status: 'success',
-      message: 'Printer credentials revoked',
-      data: { printerId },
     });
   }
 }

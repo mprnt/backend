@@ -10,6 +10,7 @@ import env from './config/environment';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { globalRateLimiter } from './middleware/rateLimiter';
+import { trustedProxy } from './middleware/trustedProxy';
 import sessionRoutes from './routes/sessions';
 import documentRoutes from './routes/documents';
 import documentRoutesStandalone from './routes/documentRoutes';
@@ -30,6 +31,10 @@ app.use(
     credentials: env.cors.credentials,
   })
 );
+
+// Restore the real client IP for dashboard-relayed requests. Must precede the
+// rate limiter so limits key on the admin, not on the dashboard server.
+app.use(trustedProxy);
 
 // Rate limiting
 app.use(globalRateLimiter);

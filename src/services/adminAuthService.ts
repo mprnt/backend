@@ -12,6 +12,7 @@ import {
   resolvePermissions,
 } from '../types/admin';
 import logger from '../utils/logger';
+import { auditService } from './auditService';
 
 interface AdminRow {
   id: string;
@@ -83,12 +84,14 @@ export class AdminAuthService {
       // Spend comparable time to a real verification so absence is not detectable
       // from response latency alone.
       await bcrypt.compare(params.password, '$2b$12$' + 'x'.repeat(53));
+      await this.auditFailure(null, 'unknown_account', params);
       throw invalid;
     }
 
     const row = result.rows[0];
 
     if ((row as AdminRow & { is_locked: boolean }).is_locked) {
+      await this.auditFailure(row, 'account_locked', params);
       throw new AppError(
         'Account temporarily locked after repeated failed sign-ins. Try again later.',
         423
@@ -98,7 +101,19 @@ export class AdminAuthService {
     const passwordOk = await bcrypt.compare(params.password, row.password_hash);
 
     if (!passwordOk) {
-      await this.registerFailedAttempt(row.id, row.failed_login_attempts);
+      const lockedNow = await this.registerFailedAttempt(row.id, row.failed_login_attempts);
+      await this.auditFailure(row, 'bad_password', params);
+      if (lockedNow) {
+        await auditService.record({
+          actorId: row.id,
+          actorScope: row.role === 'super_admin' ? 'platform' : 'shop',
+          organizationId: row.organization_id,
+          action: 'admin.account_locked',
+          details: { lockMinutes: LOCKOUT_MINUTES },
+          ipAddress: params.ipAddress,
+          userAgent: params.userAgent,
+        });
+      }
       throw invalid;
     }
 
@@ -127,7 +142,33 @@ export class AdminAuthService {
     return { tokens, principal, mustChangePassword: row.must_change_password };
   }
 
-  private async registerFailedAttempt(adminId: string, current: number): Promise<void> {
+  /**
+   * Record a failed sign-in. Until now these left no trace, so repeated guessing
+   * against an account was invisible until it happened to trip the lock.
+   *
+   * An attempt against an unknown address is platform-scoped: it belongs to no
+   * shop, and the attempted address may be anyone's. An attempt against a real
+   * shop account is visible to that shop, so an owner can see someone guessing
+   * at their staff's passwords. The password itself is never recorded.
+   */
+  private async auditFailure(
+    row: AdminRow | null,
+    reason: 'unknown_account' | 'bad_password' | 'account_locked',
+    params: { email: string; ipAddress?: string; userAgent?: string }
+  ): Promise<void> {
+    await auditService.record({
+      actorId: row?.id ?? null,
+      actorScope: row && row.role !== 'super_admin' ? 'shop' : 'platform',
+      organizationId: row?.organization_id ?? null,
+      action: 'admin.login_failed',
+      details: { reason, ...(row ? {} : { attemptedEmail: params.email.toLowerCase() }) },
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
+    });
+  }
+
+  /** @returns true when this attempt is the one that locked the account. */
+  private async registerFailedAttempt(adminId: string, current: number): Promise<boolean> {
     const attempts = (current || 0) + 1;
     const lock = attempts >= MAX_FAILED_ATTEMPTS;
 
@@ -143,6 +184,8 @@ export class AdminAuthService {
     if (lock) {
       logger.warn('Admin account locked after repeated failures', { adminId, attempts });
     }
+
+    return lock;
   }
 
   private async toPrincipal(row: AdminRow): Promise<AdminPrincipal> {

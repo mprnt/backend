@@ -5,6 +5,10 @@ import { organizationService } from '../services/organizationService';
 import { dashboardService } from '../services/dashboardService';
 import { auditService } from '../services/auditService';
 import { pricingService } from '../services/pricingService';
+import { platformService } from '../services/platformService';
+import { fleetService } from '../services/fleetService';
+import { printerAuthService } from '../services/printerAuthService';
+import { queueService } from '../services/queueService';
 import { db } from '../config/database';
 import { AppError } from '../utils/errors';
 import { ReportPeriod, ROLE_PERMISSIONS, PERMISSIONS } from '../types/admin';
@@ -39,6 +43,7 @@ class AdminController {
 
     await auditService.record({
       actorId: principal.id,
+      actorScope: principal.isSuperAdmin ? 'platform' : 'shop',
       organizationId: principal.organizationId,
       action: 'admin.login',
       ipAddress: req.ip,
@@ -335,7 +340,140 @@ class AdminController {
 
     const summary = await dashboardService.getSummary({ ...f, ...range });
 
-    res.json({ status: 'success', data: { range, summary } });
+    // Period-over-period only makes sense for a named period. An explicit
+    // from/to range has no natural "previous", and a kiosk filter is a
+    // drill-down rather than a trend view.
+    const comparison =
+      !f.from && !f.to && !f.kioskId
+        ? await platformService.getComparison(f.organizationId, f.period)
+        : null;
+
+    res.json({ status: 'success', data: { range, summary, comparison } });
+  }
+
+  /** Super admin: every shop side by side for the period. */
+  async getOrganizationComparison(req: Request, res: Response): Promise<void> {
+    const period = ((req.query.period as string) || 'month') as ReportPeriod;
+    const data = await platformService.getOrganizationComparison(period);
+    res.json({ status: 'success', data });
+  }
+
+  /** Super admin: live queue depth across every shop. */
+  async getQueueStatus(_req: Request, res: Response): Promise<void> {
+    const queue = await queueService.getQueueStatus();
+    res.json({ status: 'success', data: { queue, timestamp: new Date().toISOString() } });
+  }
+
+  // -------------------------------------------------------------------------
+  // Kiosks
+  // -------------------------------------------------------------------------
+
+  async createKiosk(req: Request, res: Response): Promise<void> {
+    const kiosk = await fleetService.createKiosk(req.body);
+
+    await auditService.fromRequest(req, 'kiosk.created', {
+      resourceType: 'kiosk',
+      resourceId: kiosk.id,
+      organizationId: req.body.organizationId,
+      details: { kioskCode: kiosk.kioskId, name: req.body.name },
+    });
+
+    res.status(201).json({ status: 'success', data: kiosk });
+  }
+
+  async updateKiosk(req: Request, res: Response): Promise<void> {
+    // Super admin (tenantId null) may edit any kiosk; shop staff only their own.
+    const scope = req.admin!.isSuperAdmin ? null : req.admin!.organizationId;
+    const kiosk = await fleetService.updateKiosk(req.params.id, scope, req.body);
+
+    await auditService.fromRequest(req, 'kiosk.updated', {
+      resourceType: 'kiosk',
+      resourceId: kiosk.id,
+      organizationId: kiosk.organizationId,
+      details: req.body,
+    });
+
+    res.json({ status: 'success', data: kiosk });
+  }
+
+  // -------------------------------------------------------------------------
+  // Printers
+  // -------------------------------------------------------------------------
+
+  /** Super admin: enroll a printer and show its key once. */
+  async enrollPrinter(req: Request, res: Response): Promise<void> {
+    const issued = await fleetService.enrollPrinter({
+      printerId: req.body.printerId,
+      kioskUuid: req.body.kioskId,
+      name: req.body.name,
+      capabilities: req.body.capabilities,
+    });
+
+    await auditService.fromRequest(req, 'printer.enrolled', {
+      resourceType: 'printer',
+      organizationId: issued.organizationId,
+      // The key itself is never logged; the prefix identifies it.
+      details: { printerId: issued.printerId, keyPrefix: issued.prefix, via: 'dashboard' },
+    });
+
+    res.status(201).json({
+      status: 'success',
+      message: 'Printer enrolled. Copy the key now — it will not be shown again.',
+      data: {
+        printerId: issued.printerId,
+        apiKey: issued.apiKey,
+        keyPrefix: issued.prefix,
+        issuedAt: issued.issuedAt,
+      },
+    });
+  }
+
+  /** Super admin: replace a printer's key. The old key stops working immediately. */
+  async rotatePrinterKey(req: Request, res: Response): Promise<void> {
+    const { printerId } = req.params;
+    const organizationId = await fleetService.printerOrganization(printerId, null);
+
+    const issued = await printerAuthService.rotateApiKey(printerId);
+    if (!issued) throw new AppError('Printer not found', 404);
+
+    await auditService.fromRequest(req, 'printer.key_rotated', {
+      resourceType: 'printer',
+      organizationId,
+      details: { printerId, keyPrefix: issued.prefix },
+    });
+
+    res.json({
+      status: 'success',
+      message: 'Key rotated. The previous key no longer works.',
+      data: {
+        printerId: issued.printerId,
+        apiKey: issued.apiKey,
+        keyPrefix: issued.prefix,
+        issuedAt: issued.issuedAt,
+      },
+    });
+  }
+
+  /**
+   * Cut a printer off. Available to shop owners for their own printers as an
+   * emergency lever — a stolen Pi should not be able to keep pulling customers'
+   * documents while they wait for the platform to respond.
+   */
+  async revokePrinterKey(req: Request, res: Response): Promise<void> {
+    const { printerId } = req.params;
+    const scope = req.admin!.isSuperAdmin ? null : req.admin!.organizationId;
+    const organizationId = await fleetService.printerOrganization(printerId, scope);
+
+    const revoked = await printerAuthService.revoke(printerId);
+    if (!revoked) throw new AppError('Printer is already revoked', 409);
+
+    await auditService.fromRequest(req, 'printer.key_revoked', {
+      resourceType: 'printer',
+      organizationId,
+      details: { printerId },
+    });
+
+    res.json({ status: 'success', message: 'Printer revoked', data: { printerId } });
   }
 
   async getTimeSeries(req: Request, res: Response): Promise<void> {
@@ -414,20 +552,28 @@ class AdminController {
   }
 
   async listAudit(req: Request, res: Response): Promise<void> {
-    const admin = req.admin!;
+    const q = req.query as Record<string, string | undefined>;
 
-    // Only a holder of audit:read_all may read across organizations.
-    const scope = admin.permissions.includes(PERMISSIONS.AUDIT_READ_ALL)
-      ? (req.tenantId ?? null)
-      : admin.organizationId;
-
+    // Scope enforcement lives in auditService.list, driven by the principal.
+    // A shop admin's organizationId / actorScope parameters are ignored there.
     const { rows, total } = await auditService.list({
-      organizationId: scope,
-      limit: Number(req.query.limit) || 50,
-      offset: Number(req.query.offset) || 0,
+      viewer: req.admin!,
+      organizationId: req.tenantId ?? null,
+      actorScope: q.actorScope as 'platform' | 'shop' | undefined,
+      category: (q.category as 'all' | 'security') || 'all',
+      action: q.action,
+      from: q.from,
+      to: q.to,
+      limit: Number(q.limit) || 50,
+      offset: Number(q.offset) || 0,
     });
 
     res.json({ status: 'success', data: { total, entries: rows } });
+  }
+
+  async listAuditActions(req: Request, res: Response): Promise<void> {
+    const actions = await auditService.listActions(req.admin!);
+    res.json({ status: 'success', data: { actions } });
   }
 
   // -------------------------------------------------------------------------
@@ -437,6 +583,19 @@ class AdminController {
   /** Rates in force. A shop sees what applies to it; the platform sees any scope. */
   async getPricing(req: Request, res: Response): Promise<void> {
     const kioskId = req.query.kioskId as string | undefined;
+
+    // kioskId arrives from the query string. Without this check a shop admin
+    // could pass another shop's kiosk and read its negotiated rates.
+    if (kioskId && req.tenantId) {
+      const owned = await db.query(`SELECT 1 FROM kiosks WHERE id = $1 AND organization_id = $2`, [
+        kioskId,
+        req.tenantId,
+      ]);
+      if (owned.rows.length === 0) {
+        throw new AppError('Kiosk not found', 404);
+      }
+    }
+
     const info = await pricingService.getPricingInfo(kioskId);
 
     res.json({ status: 'success', data: info });

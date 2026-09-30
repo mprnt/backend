@@ -1,6 +1,20 @@
-import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { Pool, PoolClient, QueryResult, QueryResultRow, types } from 'pg';
 import env from '../config/environment';
 import logger from '../utils/logger';
+
+/**
+ * Parse `timestamp without time zone` (OID 1114) as UTC.
+ *
+ * Every timestamp column in this schema holds UTC, but node-postgres by default
+ * parses these as the *host's* local time. On a UTC host (production) that is
+ * coincidentally right; on any other host every timestamp shifts by the local
+ * offset — 5h30m on an IST laptop. That mismatch caused a bypassable account
+ * lockout, a refresh-token failure and a "today" report that queried yesterday.
+ *
+ * With this in place the result is identical in production and correct
+ * everywhere else.
+ */
+types.setTypeParser(1114, (value: string) => new Date(value.replace(' ', 'T') + 'Z'));
 
 export class Database {
   private pool: Pool;

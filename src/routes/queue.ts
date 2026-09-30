@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { queueController } from '../controllers/queueController';
 import { validate } from '../middleware/validate';
-import { authenticate, authorize } from '../middleware/auth';
 import { authenticatePrinter, requireProvisioningToken } from '../middleware/printerAuth';
 import { printerRateLimiter, printerEnrollRateLimiter } from '../middleware/rateLimiter';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -12,7 +11,6 @@ import {
   pollQueueSchema,
   updateJobStatusSchema,
   jobIdParamSchema,
-  printerIdParamSchema,
 } from '../validators/queueValidator';
 
 const router = Router();
@@ -172,39 +170,11 @@ router.get(
   asyncHandler(queueController.getJobStatus.bind(queueController))
 );
 
-// ---------------------------------------------------------------------------
-// Admin endpoints. These expose fleet-wide state and mint credentials, so they
-// require an authenticated admin JWT.
-// ---------------------------------------------------------------------------
-
-router.get(
-  '/status',
-  authenticate,
-  authorize('admin', 'operator'),
-  asyncHandler(queueController.getQueueStatus.bind(queueController))
-);
-
-router.get(
-  '/printers',
-  authenticate,
-  authorize('admin', 'operator'),
-  asyncHandler(queueController.getPrinters.bind(queueController))
-);
-
-router.post(
-  '/printers/:printerId/rotate-key',
-  authenticate,
-  authorize('admin'),
-  validate(printerIdParamSchema, 'params'),
-  asyncHandler(queueController.rotateKey.bind(queueController))
-);
-
-router.post(
-  '/printers/:printerId/revoke',
-  authenticate,
-  authorize('admin'),
-  validate(printerIdParamSchema, 'params'),
-  asyncHandler(queueController.revokeKey.bind(queueController))
-);
+// Fleet administration (queue statistics, printer listing, key rotation and
+// revocation) lives under /api/v1/admin, behind admin authentication.
+//
+// It used to be here, guarded by the legacy `authorize('admin', 'operator')`.
+// No admin token carries either role — the roles are super_admin, owner,
+// manager and viewer — so those endpoints were unreachable by anyone.
 
 export default router;

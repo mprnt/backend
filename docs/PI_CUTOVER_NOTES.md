@@ -85,6 +85,6 @@ SELECT id, kiosk_id, name FROM kiosks ORDER BY kiosk_id;
 | Backend won't boot | `JWT_SECRET` / `PRINTER_PROVISIONING_TOKEN` unset | Set them in Railway |
 | Pi gets 401 on every call | Wrong or missing key | Re-check `/etc/mprnt/printer.env`, or rotate the key |
 | Pi gets 403 | Credentials revoked, or reporting on a job it does not hold | Check `printers.revoked_at` |
-| Enrollment returns 409 | Printer already enrolled | Rotate instead: `POST /queue/printers/{printerId}/rotate-key` (admin JWT) |
+| Enrollment returns 409 | Printer already enrolled | Rotate instead — Printers page in the admin dashboard, or `POST /admin/printers/{printerId}/rotate-key` |
 | Jobs stay `queued`, never claimed | No online printer matches the job's colour/duplex needs at that kiosk | Check `printers.status` and capabilities |
 | Job stuck `printing` then reappears | Lease expired — the Pi stopped reporting | Expected recovery; check the Pi's logs for why it went quiet |
