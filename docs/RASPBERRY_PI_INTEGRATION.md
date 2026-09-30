@@ -411,10 +411,11 @@ as a production secret handler.
 | POST | `/queue/poll` | Printer key | Claim next job, every 5s |
 | POST | `/queue/jobs/{jobId}/status` | Printer key | Report progress/outcome |
 | GET | `/queue/jobs/{jobId}` | none | Job status (kiosk frontend); returns `printedPages`, `totalPages`, `totalSheets`, `copies` |
-| GET | `/queue/status` | Admin JWT | Queue statistics |
-| GET | `/queue/printers` | Admin JWT | Fleet listing |
-| POST | `/queue/printers/{printerId}/rotate-key` | Admin JWT | Issue a new key |
-| POST | `/queue/printers/{printerId}/revoke` | Admin JWT | Disable a printer |
+| GET | `/admin/queue/status` | Super admin | Queue statistics |
+| GET | `/admin/printers` | Admin (`printers:read`) | Fleet listing with enrollment state |
+| POST | `/admin/printers/enroll` | Super admin | Enroll from the dashboard; key shown once |
+| POST | `/admin/printers/{printerId}/rotate-key` | Super admin | Issue a new key |
+| POST | `/admin/printers/{printerId}/revoke` | Super admin, or the shop's owner | Disable a printer |
 
 ### Error envelope
 

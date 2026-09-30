@@ -26,6 +26,12 @@ import {
   createPriceListSchema,
   reportQuerySchema,
   idParamSchema,
+  createKioskSchema,
+  updateKioskSchema,
+  adminEnrollPrinterSchema,
+  printerParamSchema,
+  periodQuerySchema,
+  auditQuerySchema,
 } from '../validators/adminValidator';
 
 const router = Router();
@@ -243,9 +249,68 @@ router.get(
 );
 router.get(
   '/audit',
+  validate(auditQuerySchema, 'query'),
   resolveTenant,
   requirePermission(PERMISSIONS.AUDIT_READ),
   h(c.listAudit.bind(c))
+);
+router.get(
+  '/audit/actions',
+  requirePermission(PERMISSIONS.AUDIT_READ),
+  h(c.listAuditActions.bind(c))
+);
+
+// ---------------------------------------------------------------------------
+// Platform reports — super admin
+// ---------------------------------------------------------------------------
+router.get(
+  '/reports/organizations',
+  requireSuperAdmin,
+  validate(periodQuerySchema, 'query'),
+  h(c.getOrganizationComparison.bind(c))
+);
+router.get('/queue/status', requireSuperAdmin, h(c.getQueueStatus.bind(c)));
+
+// ---------------------------------------------------------------------------
+// Kiosks
+//
+// Creation is platform-only. Editing name, location and service status is open
+// to shop staff with printers:manage, for their own kiosks only — taking a
+// kiosk out of service is an everyday shop decision.
+// ---------------------------------------------------------------------------
+router.post('/kiosks', requireSuperAdmin, validate(createKioskSchema), h(c.createKiosk.bind(c)));
+router.patch(
+  '/kiosks/:id',
+  requirePermission(PERMISSIONS.PRINTERS_MANAGE),
+  validate(idParamSchema, 'params'),
+  validate(updateKioskSchema),
+  h(c.updateKiosk.bind(c))
+);
+
+// ---------------------------------------------------------------------------
+// Printer credentials
+//
+// Enrolling and rotating mint a secret, so they are platform-only. Revoking is
+// also open to a shop owner for their own printers: a stolen Pi should be
+// cut off at once, not after a support ticket.
+// ---------------------------------------------------------------------------
+router.post(
+  '/printers/enroll',
+  requireSuperAdmin,
+  validate(adminEnrollPrinterSchema),
+  h(c.enrollPrinter.bind(c))
+);
+router.post(
+  '/printers/:printerId/rotate-key',
+  requireSuperAdmin,
+  validate(printerParamSchema, 'params'),
+  h(c.rotatePrinterKey.bind(c))
+);
+router.post(
+  '/printers/:printerId/revoke',
+  requirePermission(PERMISSIONS.PRINTERS_MANAGE),
+  validate(printerParamSchema, 'params'),
+  h(c.revokePrinterKey.bind(c))
 );
 
 // ---------------------------------------------------------------------------

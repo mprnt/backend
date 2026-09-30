@@ -1,9 +1,14 @@
 import { Request } from 'express';
 import { Database, db } from '../config/database';
+import { AdminPrincipal, PERMISSIONS } from '../types/admin';
 import logger from '../utils/logger';
+
+export type ActorScope = 'platform' | 'shop';
 
 export interface AuditEntry {
   actorId: string | null;
+  /** Who acted. Fixed at write time; see migration 014. */
+  actorScope: ActorScope;
   organizationId?: string | null;
   action: string;
   resourceType?: string;
@@ -14,12 +19,52 @@ export interface AuditEntry {
 }
 
 /**
- * Append-only record of every administrative mutation.
+ * Sign-in and credential events. Shown as their own "Security" view, because
+ * they answer a different question ("is someone trying to get in?") from the
+ * rest of the log ("who changed what?").
+ */
+export const SECURITY_ACTIONS = [
+  'admin.login',
+  'admin.login_failed',
+  'admin.account_locked',
+  'admin.logout',
+  'admin.password_changed',
+  'admin_user.password_reset',
+  'admin_user.unlocked',
+  'printer.enrolled',
+  'printer.key_rotated',
+  'printer.key_revoked',
+] as const;
+
+export interface AuditListParams {
+  viewer: AdminPrincipal;
+  /** Super admin only: narrow to one organization. Ignored for shop staff. */
+  organizationId?: string | null;
+  /** Super admin only. */
+  actorScope?: ActorScope;
+  category?: 'all' | 'security';
+  action?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Append-only record of every administrative action.
  *
- * Writes here must never break the operation being audited — a failure to log is
- * reported loudly but swallowed, because refusing a legitimate action because the
- * audit insert failed is the worse outcome. The trade-off is deliberate: the log
- * is for accountability, not authorization.
+ * Two audiences read it, and they must see different things:
+ *
+ *  - A shop sees what its own staff did. Nothing a platform operator did is
+ *    visible to them — not the action, not the actor, not the IP address.
+ *  - The platform sees everything, with filters to find it.
+ *
+ * That boundary is enforced in `list`, from the viewer's principal, so no
+ * caller can widen a shop's view by passing a parameter.
+ *
+ * Writes never break the operation being audited: a failed insert is logged
+ * loudly and swallowed. Refusing a legitimate action because its audit row
+ * could not be written is the worse outcome.
  */
 export class AuditService {
   constructor(private database: Database = db) {}
@@ -28,11 +73,12 @@ export class AuditService {
     try {
       await this.database.query(
         `INSERT INTO audit_logs (
-           admin_user_id, organization_id, action, resource_type, resource_id,
+           admin_user_id, actor_scope, organization_id, action, resource_type, resource_id,
            ip_address, user_agent, details, created_at
-         ) VALUES ($1, $2, $3, $4, $5, $6::inet, $7, $8, NOW())`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::inet, $8, $9, NOW())`,
         [
           entry.actorId,
+          entry.actorScope,
           entry.organizationId ?? null,
           entry.action,
           entry.resourceType ?? null,
@@ -47,9 +93,7 @@ export class AuditService {
     }
   }
 
-  /**
-   * Convenience wrapper that lifts actor and request metadata off the request.
-   */
+  /** Lift the actor, their scope and request metadata off an authenticated request. */
   async fromRequest(
     req: Request,
     action: string,
@@ -62,6 +106,7 @@ export class AuditService {
   ): Promise<void> {
     await this.record({
       actorId: req.admin?.id ?? null,
+      actorScope: req.admin && !req.admin.isSuperAdmin ? 'shop' : 'platform',
       organizationId: opts.organizationId ?? req.admin?.organizationId ?? null,
       action,
       resourceType: opts.resourceType,
@@ -72,31 +117,47 @@ export class AuditService {
     });
   }
 
-  /**
-   * Read the log. A shop admin only ever sees their own organization's entries;
-   * the caller passes null for organizationId only when it has already checked
-   * that the principal holds audit:read_all.
-   */
-  async list(params: {
-    organizationId: string | null;
-    limit?: number;
-    offset?: number;
-  }): Promise<{ rows: unknown[]; total: number }> {
+  async list(params: AuditListParams): Promise<{ rows: unknown[]; total: number }> {
     const limit = Math.min(params.limit ?? 50, 200);
     const offset = params.offset ?? 0;
+    const seesPlatform = params.viewer.permissions.includes(PERMISSIONS.AUDIT_READ_ALL);
 
-    const scoped = params.organizationId !== null;
-    const where = scoped ? 'WHERE al.organization_id = $1' : '';
-    const args = scoped ? [params.organizationId] : [];
+    const conditions: string[] = [];
+    const args: unknown[] = [];
+    const add = (sql: string, value: unknown) => {
+      args.push(value);
+      conditions.push(sql.replace('?', `$${args.length}`));
+    };
+
+    if (seesPlatform) {
+      if (params.organizationId) add('al.organization_id = ?', params.organizationId);
+      if (params.actorScope) add('al.actor_scope = ?', params.actorScope);
+    } else {
+      // A shop sees its own staff's actions and nothing else. Both conditions
+      // come from the principal, never from the request.
+      add('al.organization_id = ?', params.viewer.organizationId);
+      conditions.push(`al.actor_scope = 'shop'`);
+    }
+
+    if (params.category === 'security') {
+      add('al.action = ANY(?::text[])', [...SECURITY_ACTIONS]);
+    }
+    if (params.action) add('al.action = ?', params.action);
+    if (params.from) add('al.created_at >= ?::timestamp', params.from);
+    if (params.to) add('al.created_at < ?::timestamp', params.to);
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const rows = await this.database.query(
-      `SELECT al.id, al.action, al.resource_type, al.resource_id, al.details,
-              al.ip_address, al.created_at,
-              au.email AS actor_email, au.full_name AS actor_name
+      `SELECT al.id, al.action, al.actor_scope, al.resource_type, al.resource_id,
+              al.details, al.ip_address, al.created_at, al.organization_id,
+              au.email AS actor_email, au.full_name AS actor_name, au.role AS actor_role,
+              o.name AS organization_name
          FROM audit_logs al
          LEFT JOIN admin_users au ON au.id = al.admin_user_id
+         LEFT JOIN organizations o ON o.id = al.organization_id
          ${where}
-        ORDER BY al.created_at DESC
+        ORDER BY al.created_at DESC, al.id DESC
         LIMIT ${limit} OFFSET ${offset}`,
       args
     );
@@ -110,15 +171,40 @@ export class AuditService {
       rows: rows.rows.map((r: any) => ({
         id: String(r.id),
         action: r.action,
+        actorScope: r.actor_scope,
         resourceType: r.resource_type,
         resourceId: r.resource_id,
         details: r.details,
+        // Safe to return to a shop: their view only ever contains their own
+        // staff's rows, and seeing the IP behind a failed sign-in on one of
+        // their accounts is exactly how they would notice an intruder.
         ipAddress: r.ip_address,
         createdAt: r.created_at,
-        actor: r.actor_email ? { email: r.actor_email, name: r.actor_name } : null,
+        organization: r.organization_id
+          ? { id: r.organization_id, name: r.organization_name }
+          : null,
+        actor: r.actor_email
+          ? { email: r.actor_email, name: r.actor_name, role: r.actor_role }
+          : null,
       })),
       total: parseInt(count.rows[0].total) || 0,
     };
+  }
+
+  /** Distinct actions the viewer can see, for the filter dropdown. */
+  async listActions(viewer: AdminPrincipal): Promise<string[]> {
+    const seesPlatform = viewer.permissions.includes(PERMISSIONS.AUDIT_READ_ALL);
+
+    const result = seesPlatform
+      ? await this.database.query(`SELECT DISTINCT action FROM audit_logs ORDER BY action`)
+      : await this.database.query(
+          `SELECT DISTINCT action FROM audit_logs
+            WHERE organization_id = $1 AND actor_scope = 'shop'
+            ORDER BY action`,
+          [viewer.organizationId]
+        );
+
+    return result.rows.map((r: { action: string }) => r.action);
   }
 }
 

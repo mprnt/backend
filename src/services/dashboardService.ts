@@ -1,4 +1,5 @@
 import { Database, db } from '../config/database';
+import env from '../config/environment';
 import { AppError } from '../utils/errors';
 import { ReportPeriod } from '../types/admin';
 
@@ -105,7 +106,9 @@ export class DashboardService {
 
     if (filters.organizationId) {
       args.push(filters.organizationId);
-      conditions.push(`k.organization_id = $${args.length}`);
+      // Revenue belongs to the shop that served the job, fixed at creation —
+      // not to whoever owns the kiosk now. See migration 015.
+      conditions.push(`pj.organization_id = $${args.length}`);
     }
     if (filters.kioskId) {
       args.push(filters.kioskId);
@@ -359,9 +362,13 @@ export class DashboardService {
 
     const result = await this.database.query(
       `SELECT p.printer_id, p.name, p.status, p.last_heartbeat,
-              k.kiosk_id, k.name AS kiosk_name,
+              k.id AS kiosk_uuid, k.kiosk_id, k.name AS kiosk_name,
+              o.id AS org_id, o.name AS org_name,
               p.supports_color, p.supports_double_sided,
-              EXTRACT(EPOCH FROM (NOW() - p.last_heartbeat))::int AS seconds_since_heartbeat,
+              p.api_key_prefix, p.api_key_issued_at, p.revoked_at, p.last_seen_ip,
+              -- Both sides naive UTC, so the result does not depend on the
+              -- database session's timezone setting.
+              EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - p.last_heartbeat))::int AS seconds_since_heartbeat,
               (SELECT COUNT(*) FROM print_queue pq
                 WHERE pq.printer_id = p.id AND pq.status IN ('assigned','printing')) AS active_jobs,
               (SELECT h.paper_level FROM printer_heartbeats h
@@ -370,18 +377,37 @@ export class DashboardService {
                 WHERE h.printer_id = p.id ORDER BY h.received_at DESC LIMIT 1) AS ink_black
          FROM printers p
          JOIN kiosks k ON k.id = p.kiosk_id
+         LEFT JOIN organizations o ON o.id = k.organization_id
         ${scoped ? 'WHERE k.organization_id = $1' : ''}
-        ORDER BY k.kiosk_id, p.name`,
+        ORDER BY (p.revoked_at IS NOT NULL), o.name, k.kiosk_id, p.name`,
       scoped ? [organizationId] : []
     );
+
+    const warnAfter = env.thresholds.printer_offline_warn_minutes * 60;
 
     return result.rows.map((r: any) => ({
       printerId: r.printer_id,
       name: r.name,
-      status: r.status,
-      kiosk: { code: r.kiosk_id, name: r.kiosk_name },
+      // A revoked printer's last reported status is meaningless — it can no
+      // longer authenticate, whatever it last claimed.
+      status: r.revoked_at ? 'revoked' : r.status,
+      kiosk: { id: r.kiosk_uuid, code: r.kiosk_id, name: r.kiosk_name },
+      organization: r.org_id ? { id: r.org_id, name: r.org_name } : null,
+      enrollment: {
+        // The prefix is a non-secret fragment, shown so an operator can match a
+        // Pi's configured key to this row without ever seeing the key.
+        keyPrefix: r.api_key_prefix,
+        keyIssuedAt: r.api_key_issued_at,
+        enrolled: Boolean(r.api_key_prefix) && !r.revoked_at,
+        revokedAt: r.revoked_at,
+        lastSeenIp: r.last_seen_ip,
+      },
       lastHeartbeat: r.last_heartbeat,
       secondsSinceHeartbeat: r.seconds_since_heartbeat,
+      silent:
+        !r.revoked_at &&
+        r.seconds_since_heartbeat !== null &&
+        r.seconds_since_heartbeat > warnAfter,
       activeJobs: parseInt(r.active_jobs) || 0,
       paperLevel: r.paper_level,
       inkLevelBlack: r.ink_black,
@@ -409,7 +435,7 @@ export class DashboardService {
          LEFT JOIN print_queue pq ON pq.job_id = pj.id
         WHERE pj.payment_status = 'paid'
           AND pj.status <> 'completed'
-          ${scoped ? 'AND k.organization_id = $1' : ''}
+          ${scoped ? 'AND pj.organization_id = $1' : ''}
         ORDER BY pj.created_at ASC
         LIMIT 100`,
       scoped ? [organizationId] : []
@@ -428,7 +454,7 @@ export class DashboardService {
       errorMessage: r.error_message,
       // A paid job older than an hour that still has not printed is a refund
       // candidate, not a transient queue state.
-      refundCandidate: r.age_seconds > 3600,
+      refundCandidate: r.age_seconds > env.thresholds.refund_candidate_minutes * 60,
     }));
   }
 

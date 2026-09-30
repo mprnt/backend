@@ -76,12 +76,18 @@ interface Environment {
     access_token_ttl_seconds: number;
     refresh_token_ttl_seconds: number;
     login_rate_limit_max: number;
+    proxy_secret: string;
   };
   printer: {
     provisioning_token: string;
     job_lease_seconds: number;
     document_url_ttl_seconds: number;
     heartbeat_timeout_seconds: number;
+  };
+  thresholds: {
+    inactive_shop_days: number;
+    refund_candidate_minutes: number;
+    printer_offline_warn_minutes: number;
   };
 }
 
@@ -192,6 +198,10 @@ const env: Environment = {
       10
     ),
     login_rate_limit_max: parseInt(process.env.ADMIN_LOGIN_RATE_LIMIT_MAX || '10', 10),
+    // Shared with the admin dashboard so it can relay each admin's real IP.
+    // Unset = the dashboard's own IP is recorded for every admin. See
+    // middleware/trustedProxy.ts.
+    proxy_secret: process.env.ADMIN_PROXY_SECRET || '',
   },
   printer: {
     // Shared secret a Raspberry Pi presents once to enroll itself and receive its own API key.
@@ -202,6 +212,17 @@ const env: Environment = {
     document_url_ttl_seconds: parseInt(process.env.PRINTER_DOCUMENT_URL_TTL_SECONDS || '900', 10),
     // No heartbeat for this long => printer marked offline and stops receiving jobs.
     heartbeat_timeout_seconds: parseInt(process.env.PRINTER_HEARTBEAT_TIMEOUT_SECONDS || '180', 10),
+  },
+  // Operational thresholds for the dashboards. Defaults are deliberately
+  // conservative starting points, meant to be tuned once real traffic exists.
+  thresholds: {
+    // A shop with no paid job for this many days is flagged inactive — the
+    // earliest signal of churn or a kiosk that has quietly stopped working.
+    inactive_shop_days: parseInt(process.env.INACTIVE_SHOP_DAYS || '3', 10),
+    // A paid job still unprinted after this long is flagged as a refund candidate.
+    refund_candidate_minutes: parseInt(process.env.REFUND_CANDIDATE_MINUTES || '60', 10),
+    // A printer silent for this long is highlighted in the fleet view.
+    printer_offline_warn_minutes: parseInt(process.env.PRINTER_OFFLINE_WARN_MINUTES || '15', 10),
   },
 };
 
