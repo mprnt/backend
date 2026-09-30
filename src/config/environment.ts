@@ -50,10 +50,6 @@ interface Environment {
     razorpay_key_secret: string;
     razorpay_webhook_secret: string;
   };
-  pricing: {
-    price_per_page_bw: number;
-    price_per_page_color: number;
-  };
   logging: {
     level: string;
     file_path: string;
@@ -132,10 +128,6 @@ const env: Environment = {
     razorpay_key_id: process.env.RAZORPAY_KEY_ID || '',
     razorpay_key_secret: process.env.RAZORPAY_KEY_SECRET || '',
     razorpay_webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
-  },
-  pricing: {
-    price_per_page_bw: parseFloat(process.env.PRICE_PER_PAGE_BW || '2.00'),
-    price_per_page_color: parseFloat(process.env.PRICE_PER_PAGE_COLOR || '5.00'),
   },
   logging: {
     level: process.env.LOG_LEVEL || 'info',
