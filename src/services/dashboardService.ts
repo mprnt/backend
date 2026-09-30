@@ -106,7 +106,9 @@ export class DashboardService {
 
     if (filters.organizationId) {
       args.push(filters.organizationId);
-      conditions.push(`k.organization_id = $${args.length}`);
+      // Revenue belongs to the shop that served the job, fixed at creation —
+      // not to whoever owns the kiosk now. See migration 015.
+      conditions.push(`pj.organization_id = $${args.length}`);
     }
     if (filters.kioskId) {
       args.push(filters.kioskId);
@@ -433,7 +435,7 @@ export class DashboardService {
          LEFT JOIN print_queue pq ON pq.job_id = pj.id
         WHERE pj.payment_status = 'paid'
           AND pj.status <> 'completed'
-          ${scoped ? 'AND k.organization_id = $1' : ''}
+          ${scoped ? 'AND pj.organization_id = $1' : ''}
         ORDER BY pj.created_at ASC
         LIMIT 100`,
       scoped ? [organizationId] : []

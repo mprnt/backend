@@ -135,8 +135,9 @@ export class PlatformService {
       `WITH w AS (SELECT ${windows('$3')})
        SELECT ${aggregates('pj', 'w')}
          FROM w
-         LEFT JOIN kiosks k ON ($4::uuid IS NULL OR k.organization_id = $4::uuid)
-         LEFT JOIN print_jobs pj ON pj.kiosk_id = k.id
+         -- Attributed by the shop that served the job, not by who owns the
+         -- kiosk today; see migration 015.
+         LEFT JOIN print_jobs pj ON ($4::uuid IS NULL OR pj.organization_id = $4::uuid)
                                 AND pj.created_at >= w.prev_start
                                 AND pj.created_at < w.cur_end`,
       [trunc, step, timezone, organizationId]
@@ -169,19 +170,19 @@ export class PlatformService {
        agg AS (
          SELECT w.id, ${aggregates('pj', 'w')}
            FROM w
-           LEFT JOIN kiosks k ON k.organization_id = w.id
-           LEFT JOIN print_jobs pj ON pj.kiosk_id = k.id
+           LEFT JOIN print_jobs pj ON pj.organization_id = w.id
                                   AND pj.created_at >= w.prev_start
                                   AND pj.created_at < w.cur_end
           GROUP BY w.id
        ),
        last_paid AS (
-         SELECT k.organization_id AS id, MAX(pj.created_at) AS at
+         SELECT pj.organization_id AS id, MAX(pj.created_at) AS at
            FROM print_jobs pj
-           JOIN kiosks k ON k.id = pj.kiosk_id
           WHERE pj.payment_status = 'paid'
-          GROUP BY k.organization_id
+          GROUP BY pj.organization_id
        ),
+       -- The fleet, unlike revenue, is about today: which kiosks and printers
+       -- the shop has now.
        fleet AS (
          SELECT k.organization_id AS id,
                 COUNT(DISTINCT k.id)                                                   AS kiosks,
