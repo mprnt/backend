@@ -136,6 +136,14 @@ export class FleetService {
     name: string;
     capabilities: PrinterCapabilities;
     ipAddress?: string;
+    /**
+     * Whether the Pi itself is making this call. Registration stamps the printer
+     * online with a fresh heartbeat, which is true when the Pi enrolls itself
+     * but false when an admin enrolls it from the dashboard: no Pi has
+     * connected yet, and showing it online would say it can print when it
+     * cannot.
+     */
+    enrolledByDevice: boolean;
   }): Promise<IssuedApiKey & { kioskId: string; organizationId: string | null }> {
     const existing = await this.database.query(`SELECT 1 FROM printers WHERE printer_id = $1`, [
       params.printerId,
@@ -160,6 +168,13 @@ export class FleetService {
       capabilities: params.capabilities,
       ipAddress: params.ipAddress,
     });
+
+    if (!params.enrolledByDevice) {
+      await this.database.query(
+        `UPDATE printers SET status = 'offline', last_heartbeat = NULL WHERE id = $1`,
+        [printer.id]
+      );
+    }
 
     const issued = await printerAuthService.issueApiKeyIfAbsent(printer.id);
     if (!issued) {

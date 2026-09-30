@@ -407,6 +407,7 @@ class AdminController {
       kioskUuid: req.body.kioskId,
       name: req.body.name,
       capabilities: req.body.capabilities,
+      enrolledByDevice: false,
     });
 
     await auditService.fromRequest(req, 'printer.enrolled', {

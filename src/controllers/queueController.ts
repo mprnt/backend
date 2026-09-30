@@ -25,6 +25,7 @@ class QueueController {
       name,
       capabilities,
       ipAddress,
+      enrolledByDevice: true,
     });
 
     await auditService.record({
