@@ -7,6 +7,7 @@ import 'express-async-errors';
 import { setupSwagger } from './config/swagger';
 
 import env from './config/environment';
+import { db } from './config/database';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { globalRateLimiter } from './middleware/rateLimiter';
@@ -96,6 +97,60 @@ app.get('/health', (_req: Request, res: Response) => {
     uptime: process.uptime(),
     environment: env.node_env,
   });
+});
+
+/**
+ * @swagger
+ * /health/ready:
+ *   get:
+ *     summary: Readiness check
+ *     description: |
+ *       Unlike /health, which only shows the process is up, this checks that
+ *       the database answers. Use it for uptime monitoring — /health stays
+ *       green while every real request is failing on a dead database.
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: Database reachable
+ *       503:
+ *         description: Database unreachable or too slow
+ */
+const READY_DB_TIMEOUT_MS = 2_000;
+
+async function readiness(res: Response): Promise<void> {
+  const started = Date.now();
+  let timeout: NodeJS.Timeout | undefined;
+
+  try {
+    await Promise.race([
+      db.query('SELECT 1'),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('timed out')), READY_DB_TIMEOUT_MS);
+      }),
+    ]);
+
+    res.status(200).json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      checks: { database: { status: 'ok', latencyMs: Date.now() - started } },
+    });
+  } catch (error) {
+    logger.warn('Readiness check failed', {
+      error: error instanceof Error ? error.message : error,
+    });
+    // Deliberately no error detail in the body: this endpoint is public.
+    res.status(503).json({
+      status: 'unavailable',
+      timestamp: new Date().toISOString(),
+      checks: { database: { status: 'down' } },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+app.get('/health/ready', (_req: Request, res: Response) => {
+  void readiness(res);
 });
 
 // Swagger documentation
