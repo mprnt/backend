@@ -29,7 +29,7 @@ export class SessionController {
     res.status(200).json({
       status: 'success',
       data: {
-        sessions: result.sessions.map((s: any) => ({
+        sessions: result.sessions.map((s) => ({
           sessionId: s.session_id,
           status: s.status,
           isExpired: s.is_expired,
@@ -61,9 +61,9 @@ export class SessionController {
    * Create a new print session
    */
   async createSession(req: Request, res: Response): Promise<void> {
-    const { kioskId } = req.body;
+    const { kioskId } = req.body as { kioskId?: string };
     const clientIp = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
+    const userAgent = req.get('user-agent');
 
     logger.info('Creating session request', {
       kioskId: kioskId || 'auto-assign',
@@ -71,12 +71,18 @@ export class SessionController {
       userAgent,
     });
 
-    const { session, kiosk } = await sessionService.createSession(kioskId, clientIp, userAgent);
+    const { session, kiosk, sessionToken } = await sessionService.createSession(
+      kioskId,
+      clientIp,
+      userAgent
+    );
 
     res.status(201).json({
       status: 'success',
       data: {
         sessionId: session.session_id,
+        // Send back as X-Session-Token on every session route. Shown only once.
+        sessionToken,
         expiresAt: session.expires_at,
         createdAt: session.created_at,
         status: session.status,
@@ -159,6 +165,8 @@ export class SessionController {
               amount: parseFloat(payment.amount),
               method: payment.payment_method,
               paidAt: payment.completed_at,
+              // Paid but not queued: the amount differs from the job total.
+              amountMismatch: payment.amount_mismatch === true,
             }
           : null,
       },

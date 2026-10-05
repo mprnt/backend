@@ -15,11 +15,12 @@ import { trustedProxy } from './middleware/trustedProxy';
 import sessionRoutes from './routes/sessions';
 import documentRoutes from './routes/documents';
 import documentRoutesStandalone from './routes/documentRoutes';
-import printJobRoutes from './routes/printJobs';
+import printJobRoutes, { sessionPrintJobRoutes } from './routes/printJobs';
 import paymentRoutes from './routes/payment';
 import queueRoutes from './routes/queue';
 import setupRoutes from './routes/setup';
 import adminRoutes from './routes/admin';
+import publicRoutes from './routes/public';
 
 const app: Application = express();
 app.set('trust proxy', 1);
@@ -41,7 +42,17 @@ app.use(trustedProxy);
 app.use(globalRateLimiter);
 
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+app.use(
+  express.json({
+    limit: '10mb',
+    // The Razorpay webhook signs the exact bytes it sent, so keep them.
+    verify: (req, _res, buf) => {
+      if ((req as express.Request).originalUrl?.endsWith('/payment/webhook')) {
+        (req as express.Request).rawBody = buf;
+      }
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Compression middleware
@@ -159,13 +170,14 @@ setupSwagger(app);
 // API routes
 app.use(`/api/${env.api_version}/sessions`, sessionRoutes);
 app.use(`/api/${env.api_version}/sessions`, documentRoutes);
-app.use(`/api/${env.api_version}/sessions`, printJobRoutes);
+app.use(`/api/${env.api_version}/sessions`, sessionPrintJobRoutes);
 app.use(`/api/${env.api_version}`, printJobRoutes);
 app.use(`/api/${env.api_version}`, paymentRoutes);
 app.use(`/api/${env.api_version}/queue`, queueRoutes);
 app.use(`/api/${env.api_version}/documents`, documentRoutesStandalone);
 app.use(`/api/${env.api_version}/setup`, setupRoutes);
 app.use(`/api/${env.api_version}/admin`, adminRoutes);
+app.use(`/api/${env.api_version}/public`, publicRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

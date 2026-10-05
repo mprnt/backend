@@ -29,7 +29,18 @@ interface AdminRow {
   org_status: OrganizationStatus | null;
 }
 
+interface AdminLoginRow extends AdminRow {
+  is_locked: boolean;
+}
+
 type OrganizationStatus = 'active' | 'suspended';
+
+interface RefreshedAdminRow extends AdminRow {
+  token_id: string;
+  admin_user_id: string;
+  revoked_at: Date | null;
+  is_expired: boolean;
+}
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
@@ -41,6 +52,8 @@ export interface AccessTokenClaims {
   org: string | null;
   perms: Permission[];
   typ: 'admin_access';
+  /** must_change_password at issue time; refresh re-reads it from the database. */
+  mcp?: boolean;
 }
 
 export class AdminAuthService {
@@ -63,7 +76,7 @@ export class AdminAuthService {
     ipAddress?: string;
     userAgent?: string;
   }): Promise<{ tokens: AdminTokenPair; principal: AdminPrincipal; mustChangePassword: boolean }> {
-    const result = await this.database.query<AdminRow>(
+    const result = await this.database.query<AdminLoginRow>(
       // The lock check is evaluated by Postgres. These columns are
       // `timestamp without time zone`, so reading one into JS interprets it in
       // the process's local zone — on a non-UTC host a future lock reads as
@@ -201,6 +214,7 @@ export class AdminAuthService {
       organizationId: row.organization_id,
       permissions: resolvePermissions(row.role, overrides.rows),
       isSuperAdmin: row.role === 'super_admin',
+      mustChangePassword: row.must_change_password === true,
     };
   }
 
@@ -216,6 +230,7 @@ export class AdminAuthService {
       org: principal.organizationId,
       perms: principal.permissions,
       typ: 'admin_access',
+      mcp: principal.mustChangePassword === true,
     };
 
     const accessToken = jwt.sign(claims, env.jwt.secret, {
@@ -257,7 +272,7 @@ export class AdminAuthService {
   ): Promise<AdminTokenPair> {
     const hash = this.hashToken(refreshToken);
 
-    const stored = await this.database.query(
+    const stored = await this.database.query<RefreshedAdminRow>(
       // au.id is aliased over rt.id deliberately: the row is fed to
       // toPrincipal(), which reads `id` and must see the admin, not the token.
       // Expiry is compared by Postgres for the same timezone reason as above.
@@ -302,7 +317,7 @@ export class AdminAuthService {
       throw new AppError('This organization is suspended', 403);
     }
 
-    const principal = await this.toPrincipal(row as AdminRow);
+    const principal = await this.toPrincipal(row);
     const tokens = await this.issueTokens(principal, ipAddress, userAgent);
 
     await this.database.query(
@@ -369,6 +384,7 @@ export class AdminAuthService {
       organizationId: claims.org,
       permissions: claims.perms || [],
       isSuperAdmin: claims.role === 'super_admin',
+      mustChangePassword: claims.mcp === true,
     };
   }
 
@@ -377,7 +393,7 @@ export class AdminAuthService {
     currentPassword: string,
     newPassword: string
   ): Promise<void> {
-    const result = await this.database.query(
+    const result = await this.database.query<Pick<AdminRow, 'password_hash'>>(
       `SELECT password_hash FROM admin_users WHERE id = $1 AND deleted_at IS NULL`,
       [adminUserId]
     );
@@ -388,7 +404,8 @@ export class AdminAuthService {
 
     const ok = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
     if (!ok) {
-      throw new AppError('Current password is incorrect', 401);
+      // 400, not 401: a 401 here reads as an expired session to the admin proxy.
+      throw new AppError('Current password is incorrect', 400, 'INVALID_CURRENT_PASSWORD');
     }
 
     const hash = await bcrypt.hash(newPassword, env.security.bcrypt_rounds);

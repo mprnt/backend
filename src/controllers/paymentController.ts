@@ -153,11 +153,13 @@ class PaymentController {
 
     logger.info('Polling payment status', { orderId });
 
-    const order = await paymentService.getPaymentOrder(orderId);
+    const found = await paymentService.getPaymentOrderStatus(orderId);
 
-    if (!order) {
+    if (!found) {
       throw new AppError('Payment order not found', 404);
     }
+
+    const { order, amountMismatch, jobRefunded } = found;
 
     res.json({
       status: 'success',
@@ -167,7 +169,10 @@ class PaymentController {
         currency: order.currency,
         status: order.status,
         createdAt: order.createdAt,
-        isPaid: order.status === 'captured',
+        // A payment that landed after the job was refunded did not queue it.
+        isPaid: order.status === 'captured' && !jobRefunded,
+        // Paid but not queued: a refund case, not a print (409 AMOUNT_MISMATCH on verify).
+        amountMismatch,
       },
     });
   }
@@ -220,6 +225,22 @@ class PaymentController {
         errorCode: errorCode || 'PAYMENT_FAILED',
       },
     });
+  }
+
+  /**
+   * POST /api/v1/payment/webhook
+   * Razorpay webhook (payment.captured / order.paid). Authenticated by
+   * X-Razorpay-Signature, not by a session token.
+   */
+  async handleWebhook(req: Request, res: Response): Promise<void> {
+    const result = await paymentService.handleWebhook(
+      req.rawBody,
+      req.header('X-Razorpay-Signature')
+    );
+
+    logger.info('Razorpay webhook processed', result);
+
+    res.json({ status: 'success', data: result });
   }
 
   /**

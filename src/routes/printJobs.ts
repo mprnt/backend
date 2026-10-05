@@ -2,12 +2,21 @@ import { Router } from 'express';
 import { printJobController } from '../controllers/printJobController';
 import { validate } from '../middleware/validate';
 import { asyncHandler } from '../utils/asyncHandler';
+import { sessionTokenForJob, sessionTokenForSession } from '../middleware/sessionAuth';
 import {
   createPrintJobSchema,
   updatePrintJobSettingsSchema,
   validateJobIdParam,
 } from '../validators/printJobValidator';
 
+/**
+ * Two routers so each set of paths is mounted exactly once:
+ *  - sessionPrintJobRoutes under /sessions  -> /sessions/:sessionId/print-jobs
+ *  - router (default) under the API root   -> /print-jobs/:jobId[...]
+ * Mounting one router at both prefixes used to create shadow paths such as
+ * /sessions/print-jobs/:jobId and /:sessionId/print-jobs.
+ */
+export const sessionPrintJobRoutes = Router();
 const router = Router();
 
 /**
@@ -95,8 +104,9 @@ const router = Router();
  *       404:
  *         description: Session or document not found
  */
-router.post(
+sessionPrintJobRoutes.post(
   '/:sessionId/print-jobs',
+  sessionTokenForSession,
   validate(createPrintJobSchema, 'body'),
   asyncHandler(printJobController.createPrintJob.bind(printJobController))
 );
@@ -138,8 +148,9 @@ router.post(
  *                       items:
  *                         $ref: '#/components/schemas/PrintJob'
  */
-router.get(
+sessionPrintJobRoutes.get(
   '/:sessionId/print-jobs',
+  sessionTokenForSession,
   asyncHandler(printJobController.getSessionJobs.bind(printJobController))
 );
 
@@ -218,6 +229,7 @@ router.get(
 router.get(
   '/print-jobs/:jobId',
   validateJobIdParam,
+  sessionTokenForJob,
   asyncHandler(printJobController.getPrintJob.bind(printJobController))
 );
 
@@ -307,6 +319,7 @@ router.get(
 router.patch(
   '/print-jobs/:jobId/settings',
   validateJobIdParam,
+  sessionTokenForJob,
   validate(updatePrintJobSettingsSchema, 'body'),
   asyncHandler(printJobController.updateSettings.bind(printJobController))
 );

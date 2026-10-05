@@ -2,6 +2,61 @@ import { db } from '../config/database';
 import { Kiosk, PrintSession, PrintSessionInsert } from '../types/database';
 import { AppError } from '../middleware/errorHandler';
 import logger from '../utils/logger';
+import { sessionAccessService } from './sessionAccessService';
+
+interface SessionWithKioskRow extends PrintSession {
+  kiosk_code: string;
+  location: string;
+  kiosk_status: Kiosk['status'];
+  capabilities: Kiosk['capabilities'];
+  printer_status: Kiosk['printer_status'];
+  is_expired: boolean;
+}
+
+interface SessionKioskSummary {
+  kiosk_id: string;
+  location: string;
+  status: Kiosk['status'];
+  capabilities: Kiosk['capabilities'];
+  printer_status: Kiosk['printer_status'];
+}
+
+interface SessionDocumentDetails {
+  id: string;
+  original_filename: string;
+  file_type: string;
+  page_count: number | null;
+  file_size_bytes: number;
+  uploaded_at: Date;
+  processed: boolean;
+}
+
+interface SessionPrintJobDetails {
+  id: string;
+  status: string;
+  color_mode: string;
+  copies: number;
+  page_range: string;
+  custom_range: string | null;
+  print_sides: string;
+  paper_size: string;
+  orientation: string;
+  base_price_per_page: string;
+  total_pages: number;
+  total_amount: string;
+  created_at: Date;
+  queued_at: Date | null;
+  completed_at: Date | null;
+}
+
+interface SessionPaymentDetails {
+  transaction_id: string;
+  status: string;
+  amount: string;
+  payment_method: string;
+  completed_at: Date;
+  amount_mismatch: boolean;
+}
 
 export class SessionService {
   /**
@@ -54,7 +109,7 @@ export class SessionService {
     kioskId?: string,
     clientIp?: string,
     userAgent?: string
-  ): Promise<{ session: PrintSession; kiosk: Kiosk }> {
+  ): Promise<{ session: PrintSession; kiosk: Kiosk; sessionToken: string }> {
     let kiosk: Kiosk | null;
 
     if (kioskId) {
@@ -85,6 +140,8 @@ export class SessionService {
     // Generate session ID and expiry
     const sessionId = this.generateSessionId();
     const expiresAt = this.calculateExpiry();
+    // The secret is returned to the client once; only its hash is stored.
+    const { token: sessionToken, hash: accessTokenHash } = sessionAccessService.generateToken();
 
     logger.info('Creating new session', {
       sessionId,
@@ -104,8 +161,8 @@ export class SessionService {
 
     const result = await db.query<PrintSession>(
       `INSERT INTO print_sessions
-       (session_id, kiosk_id, status, expires_at, client_ip, user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       (session_id, kiosk_id, status, expires_at, client_ip, user_agent, access_token_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
         sessionData.session_id,
@@ -114,6 +171,7 @@ export class SessionService {
         sessionData.expires_at,
         sessionData.client_ip,
         sessionData.user_agent,
+        accessTokenHash,
       ]
     );
 
@@ -124,7 +182,7 @@ export class SessionService {
       id: session.id,
     });
 
-    return { session, kiosk };
+    return { session, kiosk, sessionToken };
   }
 
   /**
@@ -151,9 +209,9 @@ export class SessionService {
   async getSessionDetails(sessionId: string): Promise<{
     session: PrintSession;
     kiosk: Kiosk;
-    document: any | null;
-    printJob: any | null;
-    payment: any | null;
+    document: SessionDocumentDetails | null;
+    printJob: SessionPrintJobDetails | null;
+    payment: SessionPaymentDetails | null;
   }> {
     const session = await this.getSession(sessionId);
 
@@ -173,21 +231,37 @@ export class SessionService {
     const kiosk = kioskResult.rows[0];
 
     // Get associated document (if any)
-    const documentResult = await db.query('SELECT * FROM documents WHERE session_id = $1', [
-      session.id,
-    ]);
+    const documentResult = await db.query<SessionDocumentDetails>(
+      'SELECT * FROM documents WHERE session_id = $1',
+      [session.id]
+    );
     const document = documentResult.rows[0] || null;
 
     // Get print job (if any)
-    const printJobResult = await db.query('SELECT * FROM print_jobs WHERE session_id = $1', [
-      session.id,
-    ]);
+    const printJobResult = await db.query<SessionPrintJobDetails>(
+      'SELECT * FROM print_jobs WHERE session_id = $1',
+      [session.id]
+    );
     const printJob = printJobResult.rows[0] || null;
 
-    // Get payment (if any)
-    const paymentResult = await db.query('SELECT * FROM payments WHERE print_job_id = $1', [
-      printJob?.id,
-    ]);
+    // Get the captured payment (if any). Payments live in payment_orders /
+    // payment_transactions; the legacy `payments` table is never written.
+    // amount_mismatch marks a payment that was taken but not queued (the order
+    // amount differs from the job total, see PaymentService.captureOrder).
+    const paymentResult = await db.query<SessionPaymentDetails>(
+      `SELECT pt.payment_id AS transaction_id,
+              CASE WHEN po.status = 'refunded' OR pj.payment_status = 'refunded' THEN 'refunded'
+                   ELSE pt.status END AS status,
+              pt.amount, pt.method AS payment_method, pt.created_at AS completed_at,
+              (ROUND(po.amount * 100) <> ROUND(pj.total_amount * 100)) AS amount_mismatch
+         FROM payment_transactions pt
+         JOIN payment_orders po ON po.order_id = pt.order_id
+         JOIN print_jobs pj ON pj.id = po.job_id
+        WHERE po.job_id = $1 AND pt.status = 'captured'
+        ORDER BY pt.created_at ASC
+        LIMIT 1`,
+      [printJob?.id ?? null]
+    );
     const payment = paymentResult.rows[0] || null;
 
     logger.info('Retrieved session details', {
@@ -215,7 +289,7 @@ export class SessionService {
     limit?: number;
     offset?: number;
   }): Promise<{
-    sessions: Array<PrintSession & { kiosk: Kiosk }>;
+    sessions: Array<PrintSession & { kiosk: SessionKioskSummary; is_expired: boolean }>;
     total: number;
     active: number;
     expired: number;
@@ -246,7 +320,7 @@ export class SessionService {
     const sessionsQuery = `
       SELECT
         ps.*,
-        k.kiosk_id,
+        k.kiosk_id AS kiosk_code,
         k.location,
         k.status as kiosk_status,
         k.capabilities,
@@ -264,7 +338,7 @@ export class SessionService {
 
     params.push(limit, offset);
 
-    const sessionsResult = await db.query(sessionsQuery, params);
+    const sessionsResult = await db.query<SessionWithKioskRow>(sessionsQuery, params);
 
     // Get total count
     const countQuery = `
@@ -274,7 +348,7 @@ export class SessionService {
       ${whereClause}
     `;
 
-    const countResult = await db.query(countQuery, params.slice(0, -2)); // Remove limit/offset
+    const countResult = await db.query<{ total: string }>(countQuery, params.slice(0, -2)); // Remove limit/offset
     const total = parseInt(countResult.rows[0].total, 10);
 
     // Get stats
@@ -285,14 +359,14 @@ export class SessionService {
       FROM print_sessions
     `;
 
-    const statsResult = await db.query(statsQuery);
+    const statsResult = await db.query<{ active: string; expired: string }>(statsQuery);
     const active = parseInt(statsResult.rows[0].active, 10);
     const expired = parseInt(statsResult.rows[0].expired, 10);
 
     // Map results
-    const sessions = sessionsResult.rows.map((row: any) => {
+    const sessions = sessionsResult.rows.map((row) => {
       const {
-        kiosk_id,
+        kiosk_code,
         location,
         kiosk_status,
         capabilities,
@@ -303,7 +377,7 @@ export class SessionService {
       return {
         ...session,
         kiosk: {
-          kiosk_id,
+          kiosk_id: kiosk_code,
           location,
           status: kiosk_status,
           capabilities,

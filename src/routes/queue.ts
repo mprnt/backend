@@ -4,6 +4,7 @@ import { validate } from '../middleware/validate';
 import { authenticatePrinter, requireProvisioningToken } from '../middleware/printerAuth';
 import { printerRateLimiter, printerEnrollRateLimiter } from '../middleware/rateLimiter';
 import { asyncHandler } from '../utils/asyncHandler';
+import { sessionTokenForJob } from '../middleware/sessionAuth';
 import {
   enrollPrinterSchema,
   registerPrinterSchema,
@@ -167,6 +168,7 @@ router.post(
 router.get(
   '/jobs/:jobId',
   validate(jobIdParamSchema, 'params'),
+  sessionTokenForJob,
   asyncHandler(queueController.getJobStatus.bind(queueController))
 );
 

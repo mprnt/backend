@@ -120,6 +120,8 @@ export interface AdminPrincipal {
   organizationId: string | null;
   permissions: Permission[];
   isSuperAdmin: boolean;
+  /** True until the admin replaces a temporary password; most routes answer 403. */
+  mustChangePassword?: boolean;
 }
 
 export interface Organization {

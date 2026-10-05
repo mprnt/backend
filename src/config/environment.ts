@@ -79,6 +79,14 @@ interface Environment {
   };
 }
 
+/** Comma-separated origins; spaces around commas and empty entries are ignored. */
+export function parseOrigins(value: string): string[] {
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 const env: Environment = {
   node_env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -105,7 +113,7 @@ const env: Environment = {
     session_timeout_minutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || '15', 10),
   },
   cors: {
-    origin: (process.env.CORS_ORIGIN || 'http://localhost:3000').split(','),
+    origin: parseOrigins(process.env.CORS_ORIGIN || 'http://localhost:3000'),
     credentials: process.env.CORS_CREDENTIALS === 'true',
   },
   storage: {
@@ -180,10 +188,15 @@ if (env.node_env === 'production') {
   const missing: string[] = [];
   if (!env.printer.provisioning_token) missing.push('PRINTER_PROVISIONING_TOKEN');
   if (env.jwt.secret === 'change_this_secret') missing.push('JWT_SECRET');
+  // Any other key silently selects test or in-memory mock payments.
+  if (!env.payment.razorpay_key_id.startsWith('rzp_live_')) {
+    missing.push('RAZORPAY_KEY_ID (an rzp_live_ key)');
+  }
+  if (!env.payment.razorpay_key_secret) missing.push('RAZORPAY_KEY_SECRET');
   if (missing.length > 0) {
     throw new Error(
       `Refusing to start in production without: ${missing.join(', ')}. ` +
-        'These guard the printer enrollment and admin endpoints.'
+        'These guard the printer enrollment and admin endpoints, and live payments.'
     );
   }
 }

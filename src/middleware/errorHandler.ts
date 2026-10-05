@@ -4,11 +4,14 @@ import logger from '../utils/logger';
 export class AppError extends Error {
   statusCode: number;
   isOperational: boolean;
+  /** Stable machine-readable reason, sent to the client when set. */
+  code?: string;
 
-  constructor(message: string, statusCode: number) {
+  constructor(message: string, statusCode: number, code?: string) {
     super(message);
     this.statusCode = statusCode;
     this.isOperational = true;
+    this.code = code;
 
     Error.captureStackTrace(this, this.constructor);
   }
@@ -30,6 +33,7 @@ export const errorHandler = (
 
     return res.status(err.statusCode).json({
       status: 'error',
+      ...(err.code ? { code: err.code } : {}),
       message: err.message,
     });
   }

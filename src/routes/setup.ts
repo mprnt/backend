@@ -105,13 +105,27 @@ router.post(
 router.get(
   '/kiosks',
   asyncHandler(async (_req: Request, res: Response) => {
-    const result = await db.query('SELECT * FROM kiosks ORDER BY kiosk_id');
+    // Public: only what a customer needs to pick a kiosk. Internal columns
+    // (organization, printer state, maintenance data) stay private.
+    const result = await db.query<{
+      kiosk_id: string;
+      name: string;
+      location: string;
+      status: string;
+      capabilities: unknown;
+    }>('SELECT kiosk_id, name, location, status, capabilities FROM kiosks ORDER BY kiosk_id');
 
     res.json({
       status: 'success',
       data: {
         count: result.rows.length,
-        kiosks: result.rows,
+        kiosks: result.rows.map((k) => ({
+          kioskId: k.kiosk_id,
+          name: k.name,
+          location: k.location,
+          status: k.status,
+          capabilities: k.capabilities,
+        })),
       },
     });
   })

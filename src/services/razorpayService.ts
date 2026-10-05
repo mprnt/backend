@@ -3,6 +3,7 @@ import https from 'https';
 import env from '../config/environment';
 import logger from '../utils/logger';
 import { AppError } from '../utils/errors';
+import { hmacSha256Hex, safeEqual } from '../utils/crypto';
 import {
   IPaymentService,
   PaymentOrder,
@@ -11,6 +12,7 @@ import {
   VerifyPaymentParams,
   PaymentMethod,
   PaymentStatus,
+  RefundResult,
 } from '../types/payment';
 
 // Extends IPaymentService with simulation methods for local development/testing
@@ -192,12 +194,9 @@ export class RazorpayService implements IRazorpayService {
         throw new AppError('Payment order not found', 404);
       }
 
-      const generatedSignature = crypto
-        .createHmac('sha256', this.apiSecret)
-        .update(`${orderId}|${paymentId}`)
-        .digest('hex');
+      const generatedSignature = hmacSha256Hex(this.apiSecret, `${orderId}|${paymentId}`);
 
-      if (generatedSignature !== signature) {
+      if (!safeEqual(generatedSignature, signature)) {
         throw new AppError('Invalid payment signature', 400);
       }
 
@@ -213,12 +212,9 @@ export class RazorpayService implements IRazorpayService {
     }
 
     // Razorpay signature verification
-    const generatedSignature = crypto
-      .createHmac('sha256', env.payment.razorpay_key_secret)
-      .update(`${orderId}|${paymentId}`)
-      .digest('hex');
+    const generatedSignature = hmacSha256Hex(this.apiSecret, `${orderId}|${paymentId}`);
 
-    const isSignatureValid = generatedSignature === signature;
+    const isSignatureValid = safeEqual(generatedSignature, signature);
 
     if (!isSignatureValid) {
       throw new AppError('Invalid payment signature', 400);
@@ -288,12 +284,26 @@ export class RazorpayService implements IRazorpayService {
   }
 
   /**
-   * Refund a captured payment
+   * Refund a captured payment (full refund when amount is omitted).
+   * With a placeholder key (mock mode) no request leaves the process.
    */
-  async refundPayment(paymentId: string, amount?: number): Promise<PaymentTransaction> {
-    const body: { amount?: number } = {};
+  async refundPayment(
+    paymentId: string,
+    amount?: number,
+    notes?: Record<string, string>
+  ): Promise<RefundResult> {
+    if (this.isTestKey()) {
+      const refundId = `rfnd_mock_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+      logger.info('Mock refund issued', { paymentId, refundId, amount });
+      return { refundId, paymentId, amount: amount ?? 0, currency: 'INR', status: 'processed' };
+    }
+
+    const body: { amount?: number; notes?: Record<string, string> } = {};
     if (amount) {
       body.amount = Math.round(amount * 100);
+    }
+    if (notes) {
+      body.notes = notes;
     }
 
     const response = (await this.request(
@@ -302,19 +312,12 @@ export class RazorpayService implements IRazorpayService {
       body
     )) as RazorpayRefund;
 
-    // Fetch the original payment to get order/method info
-    const payment = (await this.request('GET', `/payments/${paymentId}`)) as RazorpayPayment;
-
     return {
-      id: crypto.randomUUID(),
-      orderId: payment.order_id || '',
+      refundId: response.id,
       paymentId,
       amount: response.amount / 100,
       currency: response.currency,
-      method: this.mapPaymentMethod(payment.method),
-      status: 'refunded',
-      createdAt: new Date(response.created_at * 1000),
-      updatedAt: new Date(),
+      status: response.status,
     };
   }
 
