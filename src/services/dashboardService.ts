@@ -35,6 +35,131 @@ export interface DashboardFilters {
   period?: ReportPeriod;
 }
 
+type DatabaseNumber = string;
+
+interface DashboardRangeRow {
+  start_date: string;
+  end_date: string;
+}
+
+interface OrganizationTimezoneRow {
+  timezone: string;
+}
+
+interface DashboardSummaryRow {
+  total_jobs: DatabaseNumber;
+  paid_jobs: DatabaseNumber;
+  completed_jobs: DatabaseNumber;
+  failed_jobs: DatabaseNumber;
+  in_progress_jobs: DatabaseNumber;
+  revenue: DatabaseNumber;
+  pages_charged: DatabaseNumber;
+  pages_printed: DatabaseNumber;
+  color_pages: DatabaseNumber;
+  bw_pages: DatabaseNumber;
+  sessions: DatabaseNumber;
+  avg_print_seconds: DatabaseNumber;
+}
+
+interface DashboardTimeSeriesRow {
+  bucket: string;
+  jobs: DatabaseNumber;
+  completed: DatabaseNumber;
+  failed: DatabaseNumber;
+  revenue: DatabaseNumber;
+  pages: DatabaseNumber;
+}
+
+interface KioskBreakdownRow {
+  id: string;
+  kiosk_id: string;
+  name: string;
+  location: string;
+  jobs: DatabaseNumber;
+  completed: DatabaseNumber;
+  revenue: DatabaseNumber;
+  pages: DatabaseNumber;
+}
+
+interface DashboardSessionDbRow {
+  job_id: string;
+  session_code: string | null;
+  kiosk_id: string;
+  kiosk_name: string;
+  created_at: Date;
+  completed_at: Date | null;
+  status: string;
+  payment_status: string;
+  color_mode: string;
+  print_sides: string;
+  copies: number;
+  total_pages: number;
+  printed_pages: number | null;
+  total_amount: DatabaseNumber;
+  base_price_per_page: DatabaseNumber;
+  error_message: string | null;
+  print_duration_seconds: number | null;
+  printer_id: string | null;
+  printer_name: string | null;
+}
+
+interface DashboardSession {
+  jobId: string;
+  sessionCode: string | null;
+  kiosk: { code: string; name: string };
+  printer: { id: string; name: string | null } | null;
+  createdAt: Date;
+  completedAt: Date | null;
+  status: string;
+  paymentStatus: string;
+  settings: { colorMode: string; printSides: string; copies: number };
+  pages: { charged: number; printed: number; sheets: number };
+  amount: number;
+  pricePerPage: number;
+  durationSeconds: number | null;
+  errorMessage: string | null;
+}
+
+interface DashboardSessionCountRow {
+  total: DatabaseNumber;
+}
+
+interface PrinterHealthRow {
+  printer_id: string;
+  name: string;
+  status: string;
+  last_heartbeat: Date | null;
+  kiosk_uuid: string;
+  kiosk_id: string;
+  kiosk_name: string;
+  org_id: string | null;
+  org_name: string | null;
+  supports_color: boolean;
+  supports_double_sided: boolean;
+  api_key_prefix: string | null;
+  api_key_issued_at: Date | null;
+  revoked_at: Date | null;
+  last_seen_ip: string | null;
+  seconds_since_heartbeat: number | null;
+  active_jobs: DatabaseNumber;
+  paper_level: number | null;
+  ink_black: number | null;
+}
+
+interface AttentionQueueRow {
+  job_id: string;
+  status: string;
+  total_amount: DatabaseNumber;
+  created_at: Date;
+  queue_status: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  retry_count: number | null;
+  kiosk_id: string;
+  kiosk_name: string;
+  age_seconds: number;
+}
+
 export class DashboardService {
   constructor(private database: Database = db) {}
 
@@ -67,7 +192,7 @@ export class DashboardService {
     // Formatted to text in Postgres on purpose. Returning a `date` hands node a
     // JS Date at local midnight, and .toISOString() then shifts it back across
     // the UTC boundary — so "today" would silently query yesterday.
-    const result = await this.database.query(
+    const result = await this.database.query<DashboardRangeRow>(
       `SELECT to_char(date_trunc($1, (NOW() AT TIME ZONE $2)), 'YYYY-MM-DD') AS start_date,
               to_char((NOW() AT TIME ZONE $2)::date + 1, 'YYYY-MM-DD')       AS end_date`,
       [truncate[period], timezone]
@@ -84,7 +209,7 @@ export class DashboardService {
   private async getTimezone(organizationId: string | null): Promise<string> {
     if (!organizationId) return 'Asia/Kolkata';
 
-    const result = await this.database.query(
+    const result = await this.database.query<OrganizationTimezoneRow>(
       `SELECT timezone FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
       [organizationId]
     );
@@ -143,7 +268,7 @@ export class DashboardService {
     const tz = await this.getTimezone(filters.organizationId);
     const { where, args } = this.scope(filters, tz);
 
-    const result = await this.database.query(
+    const result = await this.database.query<DashboardSummaryRow>(
       this.q(`
         SELECT
           COUNT(*)                                                    AS total_jobs,
@@ -201,7 +326,7 @@ export class DashboardService {
 
     const unit = { day: 'day', week: 'week', month: 'month', year: 'year' }[bucket];
 
-    const result = await this.database.query(
+    const result = await this.database.query<DashboardTimeSeriesRow>(
       this.q(`
         SELECT to_char(
                  date_trunc('${unit}', (pj.created_at AT TIME ZONE 'UTC') AT TIME ZONE $TZ),
@@ -221,7 +346,7 @@ export class DashboardService {
       args
     );
 
-    return result.rows.map((r: any) => ({
+    return result.rows.map((r) => ({
       date: r.bucket,
       jobs: parseInt(r.jobs) || 0,
       completed: parseInt(r.completed) || 0,
@@ -238,7 +363,7 @@ export class DashboardService {
     const tz = await this.getTimezone(filters.organizationId);
     const { where, args } = this.scope(filters, tz);
 
-    const result = await this.database.query(
+    const result = await this.database.query<KioskBreakdownRow>(
       this.q(`
         SELECT k.id, k.kiosk_id, k.name, k.location,
                COUNT(pj.id)                                        AS jobs,
@@ -254,7 +379,7 @@ export class DashboardService {
       args
     );
 
-    return result.rows.map((r: any) => ({
+    return result.rows.map((r) => ({
       kioskId: r.id,
       code: r.kiosk_id,
       name: r.name,
@@ -275,7 +400,7 @@ export class DashboardService {
    */
   async listSessions(
     filters: DashboardFilters & { status?: string; limit?: number; offset?: number }
-  ): Promise<{ rows: unknown[]; total: number }> {
+  ): Promise<{ rows: DashboardSession[]; total: number }> {
     const tz = await this.getTimezone(filters.organizationId);
     const { where, args } = this.scope(filters, tz);
 
@@ -291,7 +416,7 @@ export class DashboardService {
     const limit = Math.min(filters.limit ?? 50, 200);
     const offset = filters.offset ?? 0;
 
-    const rows = await this.database.query(
+    const rows = await this.database.query<DashboardSessionDbRow>(
       this.q(`
         SELECT pj.id                AS job_id,
                ps.session_id        AS session_code,
@@ -315,7 +440,7 @@ export class DashboardService {
       listArgs
     );
 
-    const count = await this.database.query(
+    const count = await this.database.query<DashboardSessionCountRow>(
       this.q(`
         SELECT COUNT(*) AS total
           FROM print_jobs pj
@@ -326,7 +451,7 @@ export class DashboardService {
     );
 
     return {
-      rows: rows.rows.map((r: any) => ({
+      rows: rows.rows.map((r) => ({
         jobId: r.job_id,
         sessionCode: r.session_code,
         kiosk: { code: r.kiosk_id, name: r.kiosk_name },
@@ -343,7 +468,8 @@ export class DashboardService {
         pages: {
           charged: r.total_pages,
           printed: r.printed_pages || 0,
-          sheets: (r.total_pages || 0) * (r.copies || 1),
+          // total_pages already includes copies; multiplying again doubled it.
+          sheets: r.total_pages || 0,
         },
         amount: Number(r.total_amount) || 0,
         pricePerPage: Number(r.base_price_per_page) || 0,
@@ -360,7 +486,7 @@ export class DashboardService {
   async getPrinterHealth(organizationId: string | null): Promise<unknown[]> {
     const scoped = organizationId !== null;
 
-    const result = await this.database.query(
+    const result = await this.database.query<PrinterHealthRow>(
       `SELECT p.printer_id, p.name, p.status, p.last_heartbeat,
               k.id AS kiosk_uuid, k.kiosk_id, k.name AS kiosk_name,
               o.id AS org_id, o.name AS org_name,
@@ -385,7 +511,7 @@ export class DashboardService {
 
     const warnAfter = env.thresholds.printer_offline_warn_minutes * 60;
 
-    return result.rows.map((r: any) => ({
+    return result.rows.map((r) => ({
       printerId: r.printer_id,
       name: r.name,
       // A revoked printer's last reported status is meaningless — it can no
@@ -425,7 +551,7 @@ export class DashboardService {
   async getAttentionQueue(organizationId: string | null): Promise<unknown[]> {
     const scoped = organizationId !== null;
 
-    const result = await this.database.query(
+    const result = await this.database.query<AttentionQueueRow>(
       `SELECT pj.id AS job_id, pj.status, pj.total_amount, pj.created_at,
               pq.status AS queue_status, pq.error_code, pq.error_message, pq.retry_count,
               k.kiosk_id, k.name AS kiosk_name,
@@ -441,7 +567,7 @@ export class DashboardService {
       scoped ? [organizationId] : []
     );
 
-    return result.rows.map((r: any) => ({
+    return result.rows.map((r) => ({
       jobId: r.job_id,
       status: r.status,
       queueStatus: r.queue_status,
@@ -478,12 +604,12 @@ export class DashboardService {
       'amount',
     ];
 
-    const escape = (v: unknown): string => {
+    const escape = (v: string | number | boolean | Date | null | undefined): string => {
       const s = v === null || v === undefined ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
 
-    const lines = (rows as any[]).map((r) =>
+    const lines = rows.map((r) =>
       [
         r.jobId,
         r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,

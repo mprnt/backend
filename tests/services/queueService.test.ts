@@ -43,7 +43,7 @@ describe('QueueService', () => {
 
   describe('enqueueJob', () => {
     it('inserts a queue row and tolerates a replayed payment', async () => {
-      mockDb.query.mockResolvedValueOnce(result([]) as any);
+      mockDb.query.mockResolvedValueOnce(result([]));
 
       await service.enqueueJob('job-1');
 
@@ -120,9 +120,10 @@ describe('QueueService', () => {
       expect(params[1]).toBe(4);
     });
 
-    it('clamps printed pages to total pages x copies', async () => {
+    it('clamps printed pages to total_pages, which already counts every copy', async () => {
       client.query.mockResolvedValueOnce(result([]));
-      client.query.mockResolvedValueOnce(result([{ ...queueRow, copies: 2 }])); // max = 20
+      // 10 pages x 2 copies is stored by pricing as total_pages = 20; copies must not double it.
+      client.query.mockResolvedValueOnce(result([{ ...queueRow, total_pages: 20, copies: 2 }]));
 
       await service.updateJobStatus({
         jobId: 'job-1',
@@ -212,7 +213,8 @@ describe('QueueService', () => {
       print_sides: 'single',
       paper_size: 'a4',
       orientation: 'portrait',
-      total_pages: 10,
+      // Charged pages across both copies; the printer is told 10 per copy.
+      total_pages: 20,
       s3_key: 'documents/abc.pdf',
       original_filename: 'report.pdf',
       file_size_bytes: '204800',
@@ -346,8 +348,8 @@ describe('QueueService', () => {
 
   describe('reclaimExpiredLeases', () => {
     it('requeues jobs whose printer stopped reporting', async () => {
-      mockDb.query.mockResolvedValueOnce(result([{ job_id: 'job-1', status: 'queued' }], 1) as any);
-      mockDb.query.mockResolvedValueOnce(result([]) as any);
+      mockDb.query.mockResolvedValueOnce(result([{ job_id: 'job-1', status: 'queued' }], 1));
+      mockDb.query.mockResolvedValueOnce(result([]));
 
       await expect(service.reclaimExpiredLeases()).resolves.toBe(1);
 
@@ -357,7 +359,7 @@ describe('QueueService', () => {
     });
 
     it('does nothing when every lease is healthy', async () => {
-      mockDb.query.mockResolvedValueOnce(result([], 0) as any);
+      mockDb.query.mockResolvedValueOnce(result([], 0));
 
       await expect(service.reclaimExpiredLeases()).resolves.toBe(0);
       expect(mockDb.query).toHaveBeenCalledTimes(1);

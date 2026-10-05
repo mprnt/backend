@@ -190,7 +190,8 @@ Body is optional; send your current capabilities for logging:
   `customRange` (e.g. `"1-3,7,9-11"`). **Validate it before passing it to CUPS** —
   accept only digits, commas and hyphens; reject anything else rather than
   forwarding it to a shell.
-- **`copies`** multiplies pages: a 10-page job with `copies: 2` prints 20 sheets.
+- **`totalPages`** is pages in **one copy** (after double-sided folding).
+  **`copies`** multiplies it: a 10-page job with `copies: 2` prints 20 sheets.
 
 ### Polling rules
 

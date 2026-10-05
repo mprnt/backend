@@ -18,6 +18,113 @@ import { storageService } from './storageService';
  */
 const TERMINAL_STATUSES = ['completed', 'cancelled'];
 
+/**
+ * print_jobs.total_pages is the charged count, which already includes copies
+ * (pricingService: physical pages x copies). The printer contract speaks in
+ * pages per copy, so divide back rather than multiplying by copies again.
+ */
+function pagesPerCopy(totalPages: number | null, copies: number | null): number {
+  return Math.round((totalPages || 0) / (copies || 1));
+}
+
+interface PrinterRow {
+  id: string;
+  printer_id: string;
+  kiosk_id: string;
+  name: string;
+  status: Printer['status'];
+  ip_address: string | null;
+  last_heartbeat: Date;
+  supports_color: boolean;
+  supports_double_sided: boolean;
+  max_copies: number;
+  supported_paper_sizes: string[] | null;
+  created_at: Date;
+  updated_at: Date;
+  revoked_at?: Date | null;
+}
+
+interface PollPrinterRow {
+  id: string;
+  kiosk_id: string;
+  status: Printer['status'];
+  supports_color: boolean;
+  supports_double_sided: boolean;
+}
+
+interface InFlightJobRow {
+  job_id: string;
+}
+
+interface PollJobRow {
+  job_id: string;
+  priority: number;
+  lease_count: number;
+  color_mode: string;
+  copies: number;
+  page_range: string;
+  custom_range: string | null;
+  print_sides: string;
+  paper_size: string;
+  orientation: string;
+  total_pages: number | null;
+  s3_key: string;
+  original_filename: string;
+  file_size_bytes: number | string;
+  file_type: string;
+}
+
+interface CurrentQueueJobRow {
+  status: string;
+  printer_id: string | null;
+  printed_pages: number | null;
+  retry_count: number | null;
+  max_retries: number;
+  total_pages: number | null;
+  copies: number | null;
+}
+
+interface ReclaimedJobRow {
+  job_id: string;
+  status: string;
+}
+
+interface JobStatusRow {
+  job_id: string;
+  status: string;
+  printed_pages: number | null;
+  error_message: string | null;
+  error_code: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  failed_at: Date | null;
+  total_pages: number | null;
+  copies: number | null;
+}
+
+interface PrintJobStatusRow {
+  id: string;
+  status: string;
+  printed_pages: number | null;
+  total_pages: number | null;
+  copies: number | null;
+  error_message: string | null;
+}
+
+interface QueueCountsRow {
+  queued: string;
+  assigned: string;
+  printing: string;
+  completed: string;
+  failed: string;
+}
+
+interface PendingJobsCountRow {
+  count: string;
+}
+
+type QueryParameter = string | number | boolean | null | Date;
+
 export class QueueService {
   constructor(private database: Database = db) {}
 
@@ -40,14 +147,14 @@ export class QueueService {
     ipAddress?: string;
   }): Promise<Printer> {
     // kiosk_id is a FK to kiosks(id); fail loudly rather than with a raw PG error.
-    const kiosk = await this.database.query(`SELECT id FROM kiosks WHERE id = $1`, [
+    const kiosk = await this.database.query<{ id: string }>(`SELECT id FROM kiosks WHERE id = $1`, [
       params.kioskId,
     ]);
     if (kiosk.rows.length === 0) {
       throw new AppError(`Kiosk ${params.kioskId} does not exist`, 400);
     }
 
-    const result = await this.database.query(
+    const result = await this.database.query<PrinterRow>(
       `INSERT INTO printers (
         printer_id, kiosk_id, name, ip_address,
         supports_color, supports_double_sided, max_copies, supported_paper_sizes,
@@ -94,7 +201,7 @@ export class QueueService {
     try {
       await client.query('BEGIN');
 
-      const printerResult = await client.query(
+      const printerResult = await client.query<{ id: string }>(
         `UPDATE printers SET
           status = $1,
           last_heartbeat = NOW(),
@@ -153,7 +260,7 @@ export class QueueService {
   async enqueueJob(
     jobId: string,
     priority = 0,
-    client?: { query: (text: string, params?: any[]) => Promise<unknown> }
+    client?: { query: (text: string, params?: QueryParameter[]) => Promise<unknown> }
   ): Promise<void> {
     const exec = client ?? this.database;
 
@@ -193,7 +300,7 @@ export class QueueService {
       // Capabilities are read from the database, not from the request body: a
       // compromised or buggy Pi must not be able to claim a colour job by
       // claiming colour support it does not have.
-      const printerResult = await client.query(
+      const printerResult = await client.query<PollPrinterRow>(
         `SELECT id, kiosk_id, status, supports_color, supports_double_sided, max_copies
            FROM printers
           WHERE id = $1 AND revoked_at IS NULL`,
@@ -213,7 +320,7 @@ export class QueueService {
 
       // A printer may hold only one job at a time. If it already has one
       // (e.g. it restarted mid-print), hand the same job back rather than a new one.
-      const inFlight = await client.query(
+      const inFlight = await client.query<InFlightJobRow>(
         `SELECT pq.job_id
            FROM print_queue pq
           WHERE pq.printer_id = $1
@@ -224,7 +331,7 @@ export class QueueService {
 
       const jobFilter = inFlight.rows.length > 0 ? 'pq.job_id = $4' : `pq.status = 'queued'`;
 
-      const jobResult = await client.query(
+      const jobResult = await client.query<PollJobRow>(
         `SELECT pq.job_id, pq.priority, pq.lease_count,
                 pj.color_mode, pj.copies, pj.page_range, pj.custom_range,
                 pj.print_sides, pj.paper_size, pj.orientation, pj.total_pages,
@@ -307,7 +414,7 @@ export class QueueService {
           paperSize: job.paper_size,
           orientation: job.orientation,
         },
-        totalPages: job.total_pages,
+        totalPages: pagesPerCopy(job.total_pages, job.copies),
         assignedAt: new Date(),
         leaseExpiresAt: new Date(Date.now() + env.printer.job_lease_seconds * 1000).toISOString(),
         attempt: job.lease_count + 1,
@@ -354,7 +461,7 @@ export class QueueService {
     try {
       await client.query('BEGIN');
 
-      const current = await client.query(
+      const current = await client.query<CurrentQueueJobRow>(
         `SELECT pq.status, pq.printer_id, pq.printed_pages, pq.retry_count, pq.max_retries,
                 pj.total_pages, pj.copies
            FROM print_queue pq
@@ -393,7 +500,8 @@ export class QueueService {
       }
 
       // Progress only moves forward, and never past the real page count.
-      const maxPages = (row.total_pages || 0) * (row.copies || 1);
+      // total_pages already counts every copy (it is what the customer paid for).
+      const maxPages = row.total_pages || 0;
       const printedPages =
         params.printedPages !== undefined
           ? Math.min(Math.max(params.printedPages, row.printed_pages || 0), maxPages)
@@ -523,7 +631,7 @@ export class QueueService {
    * be refunded or reprinted.
    */
   async reclaimExpiredLeases(): Promise<number> {
-    const result = await this.database.query(
+    const result = await this.database.query<ReclaimedJobRow>(
       `UPDATE print_queue SET
          status = CASE WHEN retry_count + 1 < max_retries THEN 'queued' ELSE 'failed' END,
          printer_id = NULL,
@@ -586,9 +694,9 @@ export class QueueService {
     jobId: string;
     status: string;
     printedPages: number;
-    /** Pages in the document. */
+    /** Pages in one copy. */
     totalPages: number;
-    /** Sheets this job will produce (totalPages x copies) — what printedPages counts against. */
+    /** Pages this job will produce across all copies — what printedPages counts against. */
     totalSheets: number;
     copies: number;
     errorMessage?: string;
@@ -597,7 +705,7 @@ export class QueueService {
     completedAt?: Date;
     failedAt?: Date;
   }> {
-    const result = await this.database.query(
+    const result = await this.database.query<JobStatusRow>(
       `SELECT pq.job_id, pq.status, pq.printed_pages, pq.error_message, pq.error_code,
               pq.started_at, pq.completed_at, pq.failed_at, pj.total_pages, pj.copies
          FROM print_queue pq
@@ -612,8 +720,8 @@ export class QueueService {
         jobId: row.job_id,
         status: row.status,
         printedPages: row.printed_pages || 0,
-        totalPages: row.total_pages || 0,
-        totalSheets: (row.total_pages || 0) * (row.copies || 1),
+        totalPages: pagesPerCopy(row.total_pages, row.copies),
+        totalSheets: row.total_pages || 0,
         copies: row.copies || 1,
         errorMessage: row.error_message ?? undefined,
         errorCode: row.error_code ?? undefined,
@@ -624,7 +732,7 @@ export class QueueService {
     }
 
     // Not queued yet (unpaid, or still being configured): report the job itself.
-    const jobResult = await this.database.query(
+    const jobResult = await this.database.query<PrintJobStatusRow>(
       `SELECT id, status, printed_pages, total_pages, copies, error_message
          FROM print_jobs WHERE id = $1`,
       [jobId]
@@ -639,8 +747,8 @@ export class QueueService {
       jobId: job.id,
       status: job.status,
       printedPages: job.printed_pages || 0,
-      totalPages: job.total_pages || 0,
-      totalSheets: (job.total_pages || 0) * (job.copies || 1),
+      totalPages: pagesPerCopy(job.total_pages, job.copies),
+      totalSheets: job.total_pages || 0,
       copies: job.copies || 1,
       errorMessage: job.error_message ?? undefined,
     };
@@ -653,7 +761,7 @@ export class QueueService {
     completed: number;
     failed: number;
   }> {
-    const result = await this.database.query(
+    const result = await this.database.query<QueueCountsRow>(
       `SELECT
         COUNT(*) FILTER (WHERE status = 'queued')    as queued,
         COUNT(*) FILTER (WHERE status = 'assigned')  as assigned,
@@ -679,12 +787,12 @@ export class QueueService {
       : `SELECT * FROM printers ORDER BY name`;
     const params = kioskId ? [kioskId] : [];
 
-    const result = await this.database.query(query, params);
+    const result = await this.database.query<PrinterRow>(query, params);
     return result.rows.map((row) => this.mapRowToPrinter(row));
   }
 
   async getPendingJobsCount(printerUuid: string): Promise<number> {
-    const result = await this.database.query(
+    const result = await this.database.query<PendingJobsCountRow>(
       `SELECT COUNT(*) as count FROM print_queue
         WHERE printer_id = $1 AND status IN ('assigned', 'printing')`,
       [printerUuid]
@@ -692,14 +800,14 @@ export class QueueService {
     return parseInt(result.rows[0].count) || 0;
   }
 
-  private mapRowToPrinter(row: any): Printer {
+  private mapRowToPrinter(row: PrinterRow): Printer {
     return {
       id: row.id,
       printerId: row.printer_id,
       kioskId: row.kiosk_id,
       name: row.name,
       status: row.status,
-      ipAddress: row.ip_address,
+      ipAddress: row.ip_address ?? undefined,
       lastHeartbeat: row.last_heartbeat,
       capabilities: {
         supportsColor: row.supports_color,
