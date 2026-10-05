@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-interface Environment {
+export interface Environment {
   node_env: string;
   port: number;
   api_version: string;
@@ -49,6 +49,7 @@ interface Environment {
     razorpay_key_id: string;
     razorpay_key_secret: string;
     razorpay_webhook_secret: string;
+    allow_test_payments: boolean;
   };
   logging: {
     level: string;
@@ -136,6 +137,9 @@ const env: Environment = {
     razorpay_key_id: process.env.RAZORPAY_KEY_ID || '',
     razorpay_key_secret: process.env.RAZORPAY_KEY_SECRET || '',
     razorpay_webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
+    // Lets production run on an rzp_test_ key while the deployment is still being
+    // tested. Remove it at launch.
+    allow_test_payments: process.env.ALLOW_TEST_PAYMENTS === 'true',
   },
   logging: {
     level: process.env.LOG_LEVEL || 'info',
@@ -184,19 +188,40 @@ const env: Environment = {
   },
 };
 
-if (env.node_env === 'production') {
+/**
+ * Settings production refuses to start without. An rzp_test_ key is accepted
+ * only with ALLOW_TEST_PAYMENTS=true; a missing key never is, because it
+ * silently selects in-memory mock payments.
+ */
+export function missingProductionSettings(config: Environment): string[] {
   const missing: string[] = [];
-  if (!env.printer.provisioning_token) missing.push('PRINTER_PROVISIONING_TOKEN');
-  if (env.jwt.secret === 'change_this_secret') missing.push('JWT_SECRET');
-  // Any other key silently selects test or in-memory mock payments.
-  if (!env.payment.razorpay_key_id.startsWith('rzp_live_')) {
-    missing.push('RAZORPAY_KEY_ID (an rzp_live_ key)');
+  if (!config.printer.provisioning_token) missing.push('PRINTER_PROVISIONING_TOKEN');
+  if (config.jwt.secret === 'change_this_secret') missing.push('JWT_SECRET');
+  const keyId = config.payment.razorpay_key_id;
+  const testKeyAllowed = config.payment.allow_test_payments && keyId.startsWith('rzp_test_');
+  if (!keyId.startsWith('rzp_live_') && !testKeyAllowed) {
+    missing.push(
+      'RAZORPAY_KEY_ID (an rzp_live_ key, or an rzp_test_ key with ALLOW_TEST_PAYMENTS=true)'
+    );
   }
-  if (!env.payment.razorpay_key_secret) missing.push('RAZORPAY_KEY_SECRET');
+  if (!config.payment.razorpay_key_secret) missing.push('RAZORPAY_KEY_SECRET');
+  return missing;
+}
+
+if (env.node_env === 'production') {
+  const missing = missingProductionSettings(env);
   if (missing.length > 0) {
     throw new Error(
       `Refusing to start in production without: ${missing.join(', ')}. ` +
         'These guard the printer enrollment and admin endpoints, and live payments.'
+    );
+  }
+  if (env.payment.razorpay_key_id.startsWith('rzp_test_')) {
+    // The logger imports this module, so it cannot be used here.
+    // eslint-disable-next-line no-console
+    console.warn(
+      'WARNING: running in production with a Razorpay TEST key (ALLOW_TEST_PAYMENTS=true). ' +
+        'No real money will be collected.'
     );
   }
 }
