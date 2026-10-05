@@ -62,6 +62,16 @@ export const sessionOperationRateLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     // Use sessionId from params or body, fallback to IP
-    return req.params.sessionId || req.body?.sessionId || req.ip || 'unknown';
+    const body = req.body as { sessionId?: string } | undefined;
+    return req.params.sessionId || body?.sessionId || req.ip || 'unknown';
   },
+});
+
+// Public contact form: a person sends one or two; anything more is a bot.
+export const leadRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { status: 'error', message: 'Too many submissions. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });

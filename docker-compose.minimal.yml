@@ -21,24 +21,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis Cache
-  redis:
-    image: redis:7-alpine
-    container_name: mprnt-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - mprnt-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # Adminer (Database UI)
   adminer:
     image: adminer:latest
@@ -77,5 +59,4 @@ networks:
 
 volumes:
   postgres_data:
-  redis_data:
   # minio_data:

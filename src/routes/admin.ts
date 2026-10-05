@@ -4,12 +4,20 @@ import { adminController as c } from '../controllers/adminController';
 import { validate } from '../middleware/validate';
 import {
   authenticateAdmin,
+  requirePasswordChanged,
   requirePermission,
   requireSuperAdmin,
   resolveTenant,
   requireTenant,
 } from '../middleware/adminAuth';
 import { asyncHandler } from '../utils/asyncHandler';
+import { leadController } from '../controllers/leadController';
+import { refundController } from '../controllers/refundController';
+import {
+  listLeadsSchema,
+  refundJobBodySchema,
+  refundJobParamsSchema,
+} from '../validators/leadValidator';
 import env from '../config/environment';
 import { PERMISSIONS } from '../types/admin';
 import {
@@ -72,6 +80,9 @@ router.use(authenticateAdmin);
 
 router.get('/auth/me', h(c.me.bind(c)));
 router.post('/auth/change-password', validate(changePasswordSchema), h(c.changePassword.bind(c)));
+
+// A temporary password unlocks only the two routes above.
+router.use(requirePasswordChanged);
 
 // ---------------------------------------------------------------------------
 // Organizations — platform scope
@@ -333,6 +344,29 @@ router.post(
   requirePermission(PERMISSIONS.PRICING_WRITE),
   validate(createPriceListSchema),
   h(c.createPriceList.bind(c))
+);
+
+// ---------------------------------------------------------------------------
+// Leads (MPrint Web contact form) — platform-level, super admin only
+// ---------------------------------------------------------------------------
+router.get(
+  '/leads',
+  requireSuperAdmin,
+  validate(listLeadsSchema, 'query'),
+  h(leadController.listLeads.bind(leadController))
+);
+
+// ---------------------------------------------------------------------------
+// Refunds — paid jobs that never printed. Shop owners for their own shop's
+// jobs (the service scopes by tenant), super admins for any.
+// ---------------------------------------------------------------------------
+router.post(
+  '/print-jobs/:jobId/refund',
+  resolveTenant,
+  requirePermission(PERMISSIONS.REFUNDS_ISSUE),
+  validate(refundJobParamsSchema, 'params'),
+  validate(refundJobBodySchema),
+  h(refundController.refundJob.bind(refundController))
 );
 
 // Kept for symmetry with requireTenant's intended use in future endpoints that

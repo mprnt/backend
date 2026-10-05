@@ -5,6 +5,7 @@ import env from '../config/environment';
 import { AppError } from '../utils/errors';
 import logger from '../utils/logger';
 import { asyncHandler } from '../utils/asyncHandler';
+import { sessionTokenForJob, sessionTokenForOrder } from '../middleware/sessionAuth';
 import {
   verifyPaymentSchema,
   simulatePaymentSchema,
@@ -69,6 +70,7 @@ const developmentOnly = (req: Request, _res: Response, next: NextFunction): void
  */
 router.post(
   '/print-jobs/:jobId/payment/order',
+  sessionTokenForJob,
   asyncHandler(paymentController.createOrder.bind(paymentController))
 );
 
@@ -103,6 +105,7 @@ router.post(
  */
 router.get(
   '/print-jobs/:jobId/payment',
+  sessionTokenForJob,
   asyncHandler(paymentController.getJobPayment.bind(paymentController))
 );
 
@@ -178,6 +181,7 @@ router.get(
 router.post(
   '/payment/verify',
   validate(verifyPaymentSchema, 'body'),
+  sessionTokenForOrder,
   asyncHandler(paymentController.verifyPayment.bind(paymentController))
 );
 
@@ -212,7 +216,32 @@ router.post(
  */
 router.get(
   '/payment/order/:orderId',
+  sessionTokenForOrder,
   asyncHandler(paymentController.getOrder.bind(paymentController))
+);
+
+/**
+ * @swagger
+ * /payment/webhook:
+ *   post:
+ *     summary: Razorpay webhook
+ *     description: |
+ *       Receives payment.captured and order.paid from Razorpay and captures the
+ *       order through the same path as /payment/verify, so a job is queued even
+ *       if the customer's phone never calls verify. Idempotent. Authenticated by
+ *       X-Razorpay-Signature (HMAC-SHA256 of the raw body, RAZORPAY_WEBHOOK_SECRET).
+ *     tags: [Payment]
+ *     responses:
+ *       200:
+ *         description: Event processed or ignored
+ *       400:
+ *         description: Invalid signature
+ *       503:
+ *         description: RAZORPAY_WEBHOOK_SECRET not set
+ */
+router.post(
+  '/payment/webhook',
+  asyncHandler(paymentController.handleWebhook.bind(paymentController))
 );
 
 /**
@@ -246,6 +275,7 @@ router.get(
 router.post(
   '/payment/failure',
   validate(paymentFailureSchema, 'body'),
+  sessionTokenForOrder,
   asyncHandler(paymentController.handleFailure.bind(paymentController))
 );
 
@@ -304,6 +334,7 @@ router.post(
  */
 router.get(
   '/payment/order/:orderId/status',
+  sessionTokenForOrder,
   asyncHandler(paymentController.getPaymentStatus.bind(paymentController))
 );
 
@@ -370,6 +401,7 @@ router.post(
   '/payment/mock/simulate-success',
   developmentOnly,
   validate(simulatePaymentSchema, 'body'),
+  sessionTokenForOrder,
   asyncHandler(paymentController.simulateSuccess.bind(paymentController))
 );
 
@@ -423,6 +455,7 @@ router.post(
   '/payment/mock/simulate-failure',
   developmentOnly,
   validate(simulatePaymentSchema, 'body'),
+  sessionTokenForOrder,
   asyncHandler(paymentController.simulateFailure.bind(paymentController))
 );
 

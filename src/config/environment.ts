@@ -50,10 +50,6 @@ interface Environment {
     razorpay_key_secret: string;
     razorpay_webhook_secret: string;
   };
-  pricing: {
-    price_per_page_bw: number;
-    price_per_page_color: number;
-  };
   logging: {
     level: string;
     file_path: string;
@@ -83,6 +79,14 @@ interface Environment {
   };
 }
 
+/** Comma-separated origins; spaces around commas and empty entries are ignored. */
+export function parseOrigins(value: string): string[] {
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 const env: Environment = {
   node_env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -109,7 +113,7 @@ const env: Environment = {
     session_timeout_minutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || '15', 10),
   },
   cors: {
-    origin: (process.env.CORS_ORIGIN || 'http://localhost:3000').split(','),
+    origin: parseOrigins(process.env.CORS_ORIGIN || 'http://localhost:3000'),
     credentials: process.env.CORS_CREDENTIALS === 'true',
   },
   storage: {
@@ -132,10 +136,6 @@ const env: Environment = {
     razorpay_key_id: process.env.RAZORPAY_KEY_ID || '',
     razorpay_key_secret: process.env.RAZORPAY_KEY_SECRET || '',
     razorpay_webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
-  },
-  pricing: {
-    price_per_page_bw: parseFloat(process.env.PRICE_PER_PAGE_BW || '2.00'),
-    price_per_page_color: parseFloat(process.env.PRICE_PER_PAGE_COLOR || '5.00'),
   },
   logging: {
     level: process.env.LOG_LEVEL || 'info',
@@ -188,10 +188,15 @@ if (env.node_env === 'production') {
   const missing: string[] = [];
   if (!env.printer.provisioning_token) missing.push('PRINTER_PROVISIONING_TOKEN');
   if (env.jwt.secret === 'change_this_secret') missing.push('JWT_SECRET');
+  // Any other key silently selects test or in-memory mock payments.
+  if (!env.payment.razorpay_key_id.startsWith('rzp_live_')) {
+    missing.push('RAZORPAY_KEY_ID (an rzp_live_ key)');
+  }
+  if (!env.payment.razorpay_key_secret) missing.push('RAZORPAY_KEY_SECRET');
   if (missing.length > 0) {
     throw new Error(
       `Refusing to start in production without: ${missing.join(', ')}. ` +
-        'These guard the printer enrollment and admin endpoints.'
+        'These guard the printer enrollment and admin endpoints, and live payments.'
     );
   }
 }

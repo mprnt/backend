@@ -9,6 +9,12 @@ import {
   listSessionsSchema,
 } from '../validators/sessionValidator';
 import { asyncHandler } from '../utils/asyncHandler';
+import {
+  authenticateAdmin,
+  requirePasswordChanged,
+  requireSuperAdmin,
+} from '../middleware/adminAuth';
+import { sessionTokenForSession } from '../middleware/sessionAuth';
 
 const router = Router();
 
@@ -72,8 +78,13 @@ const router = Router();
  *                         offset:
  *                           type: integer
  */
+// Lists every session platform-wide, so super admins only. It used to be
+// public, and each listed ID unlocked that customer's documents and payments.
 router.get(
   '/',
+  authenticateAdmin,
+  requirePasswordChanged,
+  requireSuperAdmin,
   validate(listSessionsSchema, 'query'),
   asyncHandler(sessionController.listSessions.bind(sessionController))
 );
@@ -188,6 +199,7 @@ router.post(
 router.get(
   '/:sessionId',
   validate(getSessionSchema, 'params'),
+  sessionTokenForSession,
   asyncHandler(sessionController.getSession.bind(sessionController))
 );
 
@@ -225,6 +237,7 @@ router.get(
 router.delete(
   '/:sessionId',
   validate(cancelSessionSchema, 'params'),
+  sessionTokenForSession,
   asyncHandler(sessionController.cancelSession.bind(sessionController))
 );
 

@@ -8,7 +8,6 @@ Backend API for the MPrnt kiosk printing system - handling QR-based printing wor
 
 - Node.js 20+
 - PostgreSQL 16+
-- Redis 7+
 - npm 10+
 
 ### Installation
@@ -64,8 +63,8 @@ scripts/             # Utility scripts
 - **Runtime**: Node.js 20+ with TypeScript
 - **Framework**: Express.js
 - **Database**: PostgreSQL
-- **Cache**: Redis
-- **Queue**: Bull (Redis-based)
+- **Cache**: in-process (no Redis)
+- **Background jobs**: in-process timers, coordinated with Postgres advisory locks
 - **Storage**: AWS S3 / MinIO
 - **Payment**: Razorpay
 - **WebSocket**: ws

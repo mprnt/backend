@@ -87,6 +87,25 @@ export const requireSuperAdmin = (req: Request, _res: Response, next: NextFuncti
 };
 
 /**
+ * Blocks an admin who still has a temporary password. Mounted after the routes
+ * they need to fix it (auth/me, auth/change-password; login, refresh and logout
+ * are public), so everything else answers 403 PASSWORD_CHANGE_REQUIRED.
+ */
+export const requirePasswordChanged = (req: Request, _res: Response, next: NextFunction): void => {
+  if (req.admin?.mustChangePassword) {
+    next(
+      new AppError(
+        'Change your temporary password before continuing',
+        403,
+        'PASSWORD_CHANGE_REQUIRED'
+      )
+    );
+    return;
+  }
+  next();
+};
+
+/**
  * Establishes the tenant scope for the request.
  *
  * This is the control that keeps one shop out of another's data, so it derives
@@ -105,10 +124,19 @@ export const resolveTenant = (req: Request, _res: Response, next: NextFunction):
     return;
   }
 
+  const queryOrganizationId = req.query.organizationId;
+  const body: unknown = req.body;
+  const bodyOrganizationId =
+    typeof body === 'object' &&
+    body !== null &&
+    'organizationId' in body &&
+    typeof body.organizationId === 'string'
+      ? body.organizationId
+      : undefined;
   const requested =
-    (req.query.organizationId as string | undefined) ||
-    (req.params.organizationId as string | undefined) ||
-    (req.body as { organizationId?: string } | undefined)?.organizationId;
+    (typeof queryOrganizationId === 'string' ? queryOrganizationId : undefined) ||
+    req.params.organizationId ||
+    bodyOrganizationId;
 
   if (admin.isSuperAdmin) {
     req.tenantId = requested ?? null;

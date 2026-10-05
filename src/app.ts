@@ -7,6 +7,7 @@ import 'express-async-errors';
 import { setupSwagger } from './config/swagger';
 
 import env from './config/environment';
+import { db } from './config/database';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { globalRateLimiter } from './middleware/rateLimiter';
@@ -14,11 +15,12 @@ import { trustedProxy } from './middleware/trustedProxy';
 import sessionRoutes from './routes/sessions';
 import documentRoutes from './routes/documents';
 import documentRoutesStandalone from './routes/documentRoutes';
-import printJobRoutes from './routes/printJobs';
+import printJobRoutes, { sessionPrintJobRoutes } from './routes/printJobs';
 import paymentRoutes from './routes/payment';
 import queueRoutes from './routes/queue';
 import setupRoutes from './routes/setup';
 import adminRoutes from './routes/admin';
+import publicRoutes from './routes/public';
 
 const app: Application = express();
 app.set('trust proxy', 1);
@@ -40,7 +42,17 @@ app.use(trustedProxy);
 app.use(globalRateLimiter);
 
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+app.use(
+  express.json({
+    limit: '10mb',
+    // The Razorpay webhook signs the exact bytes it sent, so keep them.
+    verify: (req, _res, buf) => {
+      if ((req as express.Request).originalUrl?.endsWith('/payment/webhook')) {
+        (req as express.Request).rawBody = buf;
+      }
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Compression middleware
@@ -98,19 +110,74 @@ app.get('/health', (_req: Request, res: Response) => {
   });
 });
 
+/**
+ * @swagger
+ * /health/ready:
+ *   get:
+ *     summary: Readiness check
+ *     description: |
+ *       Unlike /health, which only shows the process is up, this checks that
+ *       the database answers. Use it for uptime monitoring — /health stays
+ *       green while every real request is failing on a dead database.
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: Database reachable
+ *       503:
+ *         description: Database unreachable or too slow
+ */
+const READY_DB_TIMEOUT_MS = 2_000;
+
+async function readiness(res: Response): Promise<void> {
+  const started = Date.now();
+  let timeout: NodeJS.Timeout | undefined;
+
+  try {
+    await Promise.race([
+      db.query('SELECT 1'),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('timed out')), READY_DB_TIMEOUT_MS);
+      }),
+    ]);
+
+    res.status(200).json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      checks: { database: { status: 'ok', latencyMs: Date.now() - started } },
+    });
+  } catch (error) {
+    logger.warn('Readiness check failed', {
+      error: error instanceof Error ? error.message : error,
+    });
+    // Deliberately no error detail in the body: this endpoint is public.
+    res.status(503).json({
+      status: 'unavailable',
+      timestamp: new Date().toISOString(),
+      checks: { database: { status: 'down' } },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+app.get('/health/ready', (_req: Request, res: Response) => {
+  void readiness(res);
+});
+
 // Swagger documentation
 setupSwagger(app);
 
 // API routes
 app.use(`/api/${env.api_version}/sessions`, sessionRoutes);
 app.use(`/api/${env.api_version}/sessions`, documentRoutes);
-app.use(`/api/${env.api_version}/sessions`, printJobRoutes);
+app.use(`/api/${env.api_version}/sessions`, sessionPrintJobRoutes);
 app.use(`/api/${env.api_version}`, printJobRoutes);
 app.use(`/api/${env.api_version}`, paymentRoutes);
 app.use(`/api/${env.api_version}/queue`, queueRoutes);
 app.use(`/api/${env.api_version}/documents`, documentRoutesStandalone);
 app.use(`/api/${env.api_version}/setup`, setupRoutes);
 app.use(`/api/${env.api_version}/admin`, adminRoutes);
+app.use(`/api/${env.api_version}/public`, publicRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

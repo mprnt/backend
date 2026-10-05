@@ -180,6 +180,23 @@ export class DocumentService {
       throw new AppError('Document not found', 404);
     }
 
+    // The printer downloads this file after payment. Deleting it under a paid
+    // or queued job would take the customer's money and print nothing.
+    const activeJob = await db.query(
+      `SELECT 1 FROM print_jobs
+       WHERE document_id = $1
+         AND (payment_status = 'paid' OR status IN ('queued', 'printing'))
+       LIMIT 1`,
+      [documentId]
+    );
+    if (activeJob.rows.length > 0) {
+      throw new AppError(
+        'Document belongs to a paid or queued print job and cannot be deleted',
+        409,
+        'DOCUMENT_IN_USE'
+      );
+    }
+
     try {
       // Delete from S3/MinIO
       await storageService.deleteFile(document.s3_key);

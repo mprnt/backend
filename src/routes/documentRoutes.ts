@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { documentController } from '../controllers/documentController';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validateDocumentId } from '../middleware/validation';
+import { sessionTokenForDocument } from '../middleware/sessionAuth';
 
 const router = Router();
 
@@ -39,6 +40,7 @@ const router = Router();
 router.get(
   '/:documentId',
   validateDocumentId,
+  sessionTokenForDocument,
   asyncHandler(documentController.getDocument.bind(documentController))
 );
 
@@ -102,6 +104,7 @@ router.get(
 router.get(
   '/:documentId/preview',
   validateDocumentId,
+  sessionTokenForDocument,
   asyncHandler(documentController.getPreview.bind(documentController))
 );
 
@@ -156,6 +159,7 @@ router.get(
 router.get(
   '/:documentId/download',
   validateDocumentId,
+  sessionTokenForDocument,
   asyncHandler(documentController.getDownloadUrl.bind(documentController))
 );
 
@@ -199,6 +203,7 @@ router.get(
 router.delete(
   '/:documentId',
   validateDocumentId,
+  sessionTokenForDocument,
   asyncHandler(documentController.deleteDocument.bind(documentController))
 );
 

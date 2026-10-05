@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { documentController } from '../controllers/documentController';
 import { uploadSingle } from '../middleware/upload';
 import { asyncHandler } from '../utils/asyncHandler';
+import { sessionTokenForSession } from '../middleware/sessionAuth';
 
 const router = Router();
 
@@ -55,6 +56,8 @@ const router = Router();
  */
 router.post(
   '/:sessionId/documents',
+  // Before multer, so an unauthorised upload is never read or stored.
+  sessionTokenForSession,
   uploadSingle,
   asyncHandler(documentController.uploadDocument.bind(documentController))
 );
@@ -89,6 +92,7 @@ router.post(
  */
 router.get(
   '/:sessionId/documents',
+  sessionTokenForSession,
   asyncHandler(documentController.getSessionDocument.bind(documentController))
 );
 

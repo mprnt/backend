@@ -11,6 +11,47 @@ import {
 import { pricingService } from './pricingService';
 import logger from '../utils/logger';
 
+interface PrintJobRow {
+  id: string;
+  session_id: string;
+  document_id: string;
+  kiosk_id: string;
+  color_mode: PrintJob['colorMode'];
+  page_range: PrintJob['pageRange'];
+  custom_range: string | null;
+  copies: number;
+  orientation: PrintJob['orientation'];
+  paper_size: PrintJob['paperSize'];
+  print_sides: PrintJob['printSides'];
+  base_price_per_page: string;
+  total_pages: number;
+  total_amount: string;
+  status: PrintJob['status'];
+  error_message: string | null;
+  retry_count: number | null;
+  created_at: Date;
+  queued_at: Date | null;
+  started_printing_at: Date | null;
+  completed_at: Date | null;
+  printed_pages: number | null;
+  print_duration_seconds: number | null;
+  payment_status?: string;
+}
+
+interface PrintJobWithPageCountRow extends PrintJobRow {
+  page_count: number;
+}
+
+interface SessionStatusRow {
+  status: string;
+  expires_at: Date;
+}
+
+interface DocumentProcessingRow {
+  page_count: number | null;
+  processed: boolean;
+}
+
 export class PrintJobService {
   constructor(private database: Database = db) {}
 
@@ -27,7 +68,7 @@ export class PrintJobService {
       await client.query('BEGIN');
 
       // 1. Verify session exists and is active
-      const sessionResult = await client.query(
+      const sessionResult = await client.query<SessionStatusRow>(
         `SELECT id, status, expires_at FROM print_sessions WHERE id = $1`,
         [params.sessionId]
       );
@@ -50,7 +91,7 @@ export class PrintJobService {
       }
 
       // 2. Verify document exists and is processed
-      const documentResult = await client.query(
+      const documentResult = await client.query<DocumentProcessingRow>(
         `SELECT id, page_count, processed FROM documents WHERE id = $1`,
         [params.documentId]
       );
@@ -69,7 +110,7 @@ export class PrintJobService {
       }
 
       // 3. Check if print job already exists for this session
-      const existingJobResult = await client.query(
+      const existingJobResult = await client.query<{ id: string }>(
         `SELECT id FROM print_jobs WHERE session_id = $1`,
         [params.sessionId]
       );
@@ -90,7 +131,7 @@ export class PrintJobService {
 
       // 5. Create print job
       const jobId = uuidv4();
-      const insertResult = await client.query(
+      const insertResult = await client.query<PrintJobRow>(
         `INSERT INTO print_jobs (
           id,
           session_id,
@@ -153,7 +194,10 @@ export class PrintJobService {
    * Get print job by ID
    */
   async getPrintJob(jobId: string): Promise<PrintJob | null> {
-    const result = await this.database.query(`SELECT * FROM print_jobs WHERE id = $1`, [jobId]);
+    const result = await this.database.query<PrintJobRow>(
+      `SELECT * FROM print_jobs WHERE id = $1`,
+      [jobId]
+    );
 
     if (result.rows.length === 0) {
       return null;
@@ -166,7 +210,7 @@ export class PrintJobService {
    * Get all print jobs for a session
    */
   async getSessionJobs(sessionId: string): Promise<PrintJob[]> {
-    const result = await this.database.query(
+    const result = await this.database.query<PrintJobRow>(
       `SELECT pj.*
        FROM print_jobs pj
        JOIN print_sessions ps ON pj.session_id = ps.id
@@ -190,12 +234,14 @@ export class PrintJobService {
     try {
       await client.query('BEGIN');
 
-      // 1. Get existing job
-      const jobResult = await client.query(
+      // 1. Get existing job. The row lock serialises this with
+      //    createPaymentOrder, which reads total_amount under the same lock.
+      const jobResult = await client.query<PrintJobWithPageCountRow>(
         `SELECT pj.*, d.page_count
          FROM print_jobs pj
          JOIN documents d ON pj.document_id = d.id
-         WHERE pj.id = $1`,
+         WHERE pj.id = $1
+         FOR UPDATE OF pj`,
         [params.jobId]
       );
 
@@ -213,12 +259,37 @@ export class PrintJobService {
         );
       }
 
-      // 3. Merge settings
+      // 3. Settings are frozen once a payment order exists. The order's amount
+      //    is fixed at Razorpay, so changing settings after it would let a
+      //    customer pay the old (smaller) price for the new job. Only a failed
+      //    order releases the lock; a new order is then priced afresh.
+      if (existingJob.payment_status === 'paid') {
+        throw new AppError(
+          'Print job is already paid; settings are locked',
+          409,
+          'JOB_SETTINGS_LOCKED'
+        );
+      }
+
+      const openOrder = await client.query<{ found: number }>(
+        `SELECT 1 AS found FROM payment_orders WHERE job_id = $1 AND status <> 'failed' LIMIT 1`,
+        [params.jobId]
+      );
+
+      if (openOrder.rows.length > 0) {
+        throw new AppError(
+          'A payment order already exists for this job; settings are locked',
+          409,
+          'JOB_SETTINGS_LOCKED'
+        );
+      }
+
+      // 4. Merge settings
       const currentSettings: PrintSettings = {
         colorMode: existingJob.color_mode,
         copies: existingJob.copies,
         pageRange: existingJob.page_range,
-        customRange: existingJob.custom_range,
+        customRange: existingJob.custom_range ?? undefined,
         printSides: existingJob.print_sides,
         paperSize: existingJob.paper_size,
         orientation: existingJob.orientation,
@@ -229,15 +300,15 @@ export class PrintJobService {
         ...params.settings,
       };
 
-      // 4. Recalculate pricing
+      // 5. Recalculate pricing
       const pricing = await pricingService.calculatePrice(
         newSettings,
         existingJob.page_count,
         existingJob.kiosk_id
       );
 
-      // 5. Update job
-      const updateResult = await client.query(
+      // 6. Update job
+      const updateResult = await client.query<PrintJobRow>(
         `UPDATE print_jobs SET
           color_mode = $1,
           page_range = $2,
@@ -317,7 +388,7 @@ export class PrintJobService {
     `;
     values.push(jobId);
 
-    const result = await this.database.query(query, values);
+    const result = await this.database.query<PrintJobRow>(query, values);
 
     if (result.rows.length === 0) {
       throw new AppError('Print job not found', 404);
@@ -335,7 +406,7 @@ export class PrintJobService {
   /**
    * Map database row to PrintJob object
    */
-  private mapRowToPrintJob(row: any): PrintJob {
+  private mapRowToPrintJob(row: PrintJobRow): PrintJob {
     return {
       id: row.id,
       sessionId: row.session_id,
@@ -343,7 +414,7 @@ export class PrintJobService {
       kioskId: row.kiosk_id,
       colorMode: row.color_mode,
       pageRange: row.page_range,
-      customRange: row.custom_range,
+      customRange: row.custom_range ?? undefined,
       copies: row.copies,
       orientation: row.orientation,
       paperSize: row.paper_size,
@@ -352,14 +423,14 @@ export class PrintJobService {
       totalPages: row.total_pages,
       totalAmount: parseFloat(row.total_amount),
       status: row.status,
-      errorMessage: row.error_message,
+      errorMessage: row.error_message ?? undefined,
       retryCount: row.retry_count || 0,
       createdAt: row.created_at,
-      queuedAt: row.queued_at,
-      startedPrintingAt: row.started_printing_at,
-      completedAt: row.completed_at,
+      queuedAt: row.queued_at ?? undefined,
+      startedPrintingAt: row.started_printing_at ?? undefined,
+      completedAt: row.completed_at ?? undefined,
       printedPages: row.printed_pages || 0,
-      printDurationSeconds: row.print_duration_seconds,
+      printDurationSeconds: row.print_duration_seconds ?? undefined,
     };
   }
 }
