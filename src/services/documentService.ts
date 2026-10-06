@@ -181,11 +181,16 @@ export class DocumentService {
     }
 
     // The printer downloads this file after payment. Deleting it under a paid
-    // or queued job would take the customer's money and print nothing.
+    // or queued job would take the customer's money and print nothing — and
+    // so would deleting it while a payment order is open, because Razorpay can
+    // still capture that order after the customer leaves checkout.
     const activeJob = await db.query(
-      `SELECT 1 FROM print_jobs
-       WHERE document_id = $1
-         AND (payment_status = 'paid' OR status IN ('queued', 'printing'))
+      `SELECT 1 FROM print_jobs pj
+       WHERE pj.document_id = $1
+         AND (pj.payment_status = 'paid'
+              OR pj.status IN ('queued', 'printing')
+              OR EXISTS (SELECT 1 FROM payment_orders po
+                          WHERE po.job_id = pj.id AND po.status <> 'failed'))
        LIMIT 1`,
       [documentId]
     );
@@ -212,6 +217,19 @@ export class DocumentService {
           });
         }
       }
+
+      // An unpaid job priced for this file goes with it, so the customer can
+      // upload a different file and create a fresh job in the same session.
+      // Left behind, it would block job creation (one per session) while
+      // pointing at nothing. A job with any payment order is kept: those rows
+      // are financial history and the foreign key forbids deleting it.
+      await db.query(
+        `DELETE FROM print_jobs pj
+          WHERE pj.document_id = $1
+            AND pj.payment_status <> 'paid'
+            AND NOT EXISTS (SELECT 1 FROM payment_orders po WHERE po.job_id = pj.id)`,
+        [documentId]
+      );
 
       // Delete from database
       await db.query('DELETE FROM documents WHERE id = $1', [documentId]);

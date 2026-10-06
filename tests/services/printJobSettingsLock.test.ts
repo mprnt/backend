@@ -20,6 +20,8 @@ const jobRow = (over: Record<string, unknown> = {}) => ({
   orientation: 'portrait',
   page_count: 2,
   kiosk_id: 'k1',
+  session_status: 'draft',
+  session_expires_at: new Date(Date.now() + 5 * 60_000),
   ...over,
 });
 
@@ -76,6 +78,15 @@ describe('PrintJobService.updateSettings — settings lock', () => {
     await expect(
       service.updateSettings({ jobId: JOB, settings: { copies: 3 } })
     ).rejects.toMatchObject({ statusCode: 409, code: 'JOB_SETTINGS_LOCKED' });
+  });
+
+  it('410 SESSION_EXPIRED once the session window has passed', async () => {
+    build([['FROM print_jobs pj', [jobRow({ session_expires_at: new Date(Date.now() - 1000) })]]]);
+
+    await expect(
+      service.updateSettings({ jobId: JOB, settings: { copies: 3 } })
+    ).rejects.toMatchObject({ statusCode: 410, code: 'SESSION_EXPIRED' });
+    expect(db.sqlFor('UPDATE print_jobs')).toHaveLength(0);
   });
 
   it('allows changes when only failed orders exist', async () => {

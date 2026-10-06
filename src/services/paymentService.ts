@@ -48,6 +48,8 @@ interface CaptureOutcome {
   amountMismatch: boolean;
   /** The job was refunded before this payment arrived; recorded, not queued. */
   jobRefunded: boolean;
+  /** The upload was deleted (session expired) before the money arrived; recorded, not queued. */
+  documentMissing: boolean;
   transaction: PaymentTransaction;
 }
 
@@ -100,6 +102,12 @@ export class PaymentService {
    * this transaction. updateSettings takes the same lock and refuses to run
    * once an order exists, so the amount fixed at Razorpay always matches the
    * settings that will be printed.
+   *
+   * The session must still be live and its upload still present: the expiry
+   * sweep deletes the file, and a job paid without one can never print. Once
+   * the order exists the session is extended by the payment grace period, so a
+   * customer who opens checkout in the last minute does not lose their upload
+   * while a UPI payment settles.
    */
   async createPaymentOrder(params: CreatePaymentOrderParams): Promise<{
     order: PaymentOrder;
@@ -116,11 +124,18 @@ export class PaymentService {
         total_amount: string;
         status: string;
         payment_status: string;
+        document_id: string | null;
+        session_uuid: string;
+        session_status: string;
+        session_expires_at: Date;
       }>(
-        `SELECT id, total_amount, status, payment_status
-         FROM print_jobs
-         WHERE id = $1
-         FOR UPDATE`,
+        `SELECT pj.id, pj.total_amount, pj.status, pj.payment_status, pj.document_id,
+                ps.id AS session_uuid, ps.status AS session_status,
+                ps.expires_at AS session_expires_at
+         FROM print_jobs pj
+         JOIN print_sessions ps ON ps.id = pj.session_id
+         WHERE pj.id = $1
+         FOR UPDATE OF pj`,
         [params.jobId]
       );
 
@@ -138,6 +153,25 @@ export class PaymentService {
         throw new AppError('Payment already completed for this job', 400);
       }
 
+      if (
+        ['expired', 'complete', 'error'].includes(job.session_status) ||
+        new Date(job.session_expires_at) < new Date()
+      ) {
+        throw new AppError(
+          'This session has expired. Scan the kiosk QR code to start again.',
+          410,
+          'SESSION_EXPIRED'
+        );
+      }
+
+      if (!job.document_id) {
+        throw new AppError(
+          'The uploaded document is no longer available. Upload it again in a new session.',
+          409,
+          'DOCUMENT_MISSING'
+        );
+      }
+
       // 2. Check if order already exists for this job
       const existingOrderResult = await client.query<{
         order_id: string;
@@ -146,9 +180,12 @@ export class PaymentService {
 
       const openOrder = existingOrderResult.rows.find((o) => o.status !== 'failed');
       if (openOrder) {
+        // The client resumes this order (GET /print-jobs/:jobId/payment)
+        // rather than opening a second one for the same job.
         throw new AppError(
           `Payment order already exists for this job. Order ID: ${openOrder.order_id}`,
-          400
+          400,
+          'PAYMENT_ORDER_EXISTS'
         );
       }
 
@@ -165,6 +202,14 @@ export class PaymentService {
           id, job_id, order_id, amount, currency, status, created_at
         ) VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
         [order.id, params.jobId, order.orderId, order.amount, order.currency, order.status]
+      );
+
+      await client.query(
+        `UPDATE print_sessions SET expires_at = GREATEST(expires_at, $2) WHERE id = $1`,
+        [
+          job.session_uuid,
+          new Date(Date.now() + env.security.session_payment_grace_minutes * 60_000),
+        ]
       );
 
       await client.query('COMMIT');
@@ -229,6 +274,15 @@ export class PaymentService {
       );
     }
 
+    if (outcome.documentMissing) {
+      throw new AppError(
+        'Payment received, but the session had expired and the document was deleted, so ' +
+          'nothing will print. The payment will be refunded.',
+        409,
+        'DOCUMENT_MISSING'
+      );
+    }
+
     return { success: true, transaction: outcome.transaction };
   }
 
@@ -279,6 +333,9 @@ export class PaymentService {
       }
       if (outcome.jobRefunded) {
         return { handled: true, event, reason: 'job_refunded' };
+      }
+      if (outcome.documentMissing) {
+        return { handled: true, event, reason: 'document_missing' };
       }
       return {
         handled: true,
@@ -340,9 +397,11 @@ export class PaymentService {
       status: string;
       total_amount: string;
       payment_status: string;
+      document_id: string | null;
+      job_status: string;
     }>(
       `SELECT po.job_id, po.amount, po.currency, po.status,
-              pj.total_amount, pj.payment_status
+              pj.total_amount, pj.payment_status, pj.document_id, pj.status AS job_status
        FROM payment_orders po
        JOIN print_jobs pj ON po.job_id = pj.id
        WHERE po.order_id = $1
@@ -390,6 +449,8 @@ export class PaymentService {
         jobRefunded: order.payment_status === 'refunded',
         // A repeat verify must not report success for a job that never queued.
         amountMismatch: orderPaise !== jobPaise,
+        // Only a job that never queued; a printed job's file is deleted on expiry too.
+        documentMissing: order.document_id === null && order.job_status === 'pending',
         transaction: {
           id: row?.id ?? '',
           orderId: args.orderId,
@@ -434,6 +495,8 @@ export class PaymentService {
 
     let queued = false;
     const jobRefunded = order.payment_status === 'refunded';
+    // document_id is SET NULL when the expiry sweep deletes the upload.
+    const documentMissing = order.document_id === null;
 
     if (jobRefunded) {
       // The job was refunded (and cancelled) before this payment landed, e.g.
@@ -470,6 +533,20 @@ export class PaymentService {
         jobPaise,
         paidAmountPaise: args.paidAmountPaise,
       });
+    } else if (documentMissing) {
+      // Paid after the session expired and its upload was deleted. The Pi
+      // could never fetch the file, so queueing would strand the job; leave it
+      // paid-but-unprinted so it surfaces as a refund candidate.
+      await client.query(
+        `UPDATE print_jobs
+         SET payment_status = 'paid', paid_at = NOW(), error_message = $1
+         WHERE id = $2`,
+        ['Paid after the document was deleted (session expired); refund required', order.job_id]
+      );
+      logger.error('Payment for a job whose document was deleted; job not queued', {
+        orderId: args.orderId,
+        jobId: order.job_id,
+      });
     } else {
       await client.query(
         `UPDATE print_jobs
@@ -499,6 +576,8 @@ export class PaymentService {
       queued,
       amountMismatch: amountMismatch && order.payment_status !== 'paid' && !jobRefunded,
       jobRefunded,
+      documentMissing:
+        documentMissing && !amountMismatch && order.payment_status !== 'paid' && !jobRefunded,
       transaction: {
         id: transactionId,
         orderId: args.orderId,
@@ -546,9 +625,12 @@ export class PaymentService {
    * captured but its amount differs from the job total, i.e. the money was
    * taken and the job was deliberately not queued (see captureOrder).
    */
-  async getPaymentOrderStatus(
-    orderId: string
-  ): Promise<{ order: PaymentOrder; amountMismatch: boolean; jobRefunded: boolean } | null> {
+  async getPaymentOrderStatus(orderId: string): Promise<{
+    order: PaymentOrder;
+    amountMismatch: boolean;
+    jobRefunded: boolean;
+    documentMissing: boolean;
+  } | null> {
     const result = await this.database.query<{
       id: string;
       order_id: string;
@@ -558,9 +640,11 @@ export class PaymentService {
       created_at: Date;
       total_amount: string;
       payment_status: string;
+      document_missing: boolean;
     }>(
       `SELECT po.id, po.order_id, po.amount, po.currency, po.status, po.created_at,
-              pj.total_amount, pj.payment_status
+              pj.total_amount, pj.payment_status,
+              (pj.document_id IS NULL AND pj.status = 'pending') AS document_missing
          FROM payment_orders po
          JOIN print_jobs pj ON pj.id = po.job_id
         WHERE po.order_id = $1`,
@@ -584,6 +668,7 @@ export class PaymentService {
       amountMismatch:
         row.status === 'captured' && toPaise(row.amount) !== toPaise(row.total_amount),
       jobRefunded: row.payment_status === 'refunded',
+      documentMissing: row.status === 'captured' && row.document_missing === true,
     };
   }
 

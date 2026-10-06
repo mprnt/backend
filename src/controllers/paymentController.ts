@@ -134,6 +134,9 @@ class PaymentController {
     res.json({
       status: 'success',
       data: {
+        // With the order id, enough for a resumed client (reload, rescan) to
+        // reopen Razorpay Checkout instead of creating a second order.
+        keyId: env.payment.razorpay_key_id,
         orderId: order.orderId,
         amount: order.amount,
         currency: order.currency,
@@ -159,7 +162,7 @@ class PaymentController {
       throw new AppError('Payment order not found', 404);
     }
 
-    const { order, amountMismatch, jobRefunded } = found;
+    const { order, amountMismatch, jobRefunded, documentMissing } = found;
 
     res.json({
       status: 'success',
@@ -173,6 +176,8 @@ class PaymentController {
         isPaid: order.status === 'captured' && !jobRefunded,
         // Paid but not queued: a refund case, not a print (409 AMOUNT_MISMATCH on verify).
         amountMismatch,
+        // Paid after the session expired and its upload was deleted: refund case.
+        documentMissing,
       },
     });
   }

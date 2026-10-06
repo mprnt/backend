@@ -40,6 +40,8 @@ interface PrintJobRow {
 
 interface PrintJobWithPageCountRow extends PrintJobRow {
   page_count: number;
+  session_status: string;
+  session_expires_at: Date;
 }
 
 interface SessionStatusRow {
@@ -237,9 +239,11 @@ export class PrintJobService {
       // 1. Get existing job. The row lock serialises this with
       //    createPaymentOrder, which reads total_amount under the same lock.
       const jobResult = await client.query<PrintJobWithPageCountRow>(
-        `SELECT pj.*, d.page_count
+        `SELECT pj.*, d.page_count,
+                ps.status AS session_status, ps.expires_at AS session_expires_at
          FROM print_jobs pj
          JOIN documents d ON pj.document_id = d.id
+         JOIN print_sessions ps ON ps.id = pj.session_id
          WHERE pj.id = $1
          FOR UPDATE OF pj`,
         [params.jobId]
@@ -250,6 +254,15 @@ export class PrintJobService {
       }
 
       const existingJob = jobResult.rows[0];
+
+      // Same window as creating the job: the expiry sweep is about to delete
+      // the upload, so a price quoted now could never be printed.
+      if (
+        ['complete', 'error', 'expired'].includes(existingJob.session_status) ||
+        new Date(existingJob.session_expires_at) < new Date()
+      ) {
+        throw new AppError('Session has expired', 410, 'SESSION_EXPIRED');
+      }
 
       // 2. Check if job can be updated (must be in pending status)
       if (existingJob.status !== 'pending') {

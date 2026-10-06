@@ -30,6 +30,19 @@ function gateway(): jest.Mocked<IPaymentService> {
   };
 }
 
+/** The job row createPaymentOrder locks, joined with its session. */
+const jobRow = (over: Record<string, unknown> = {}) => ({
+  id: JOB,
+  total_amount: '10',
+  status: 'pending',
+  payment_status: 'unpaid',
+  document_id: 'doc-1',
+  session_uuid: 'ps-1',
+  session_status: 'draft',
+  session_expires_at: new Date(Date.now() + 5 * 60_000),
+  ...over,
+});
+
 const orderRow = (over: Record<string, unknown> = {}) => ({
   job_id: JOB,
   amount: '10.00',
@@ -60,12 +73,7 @@ describe('PaymentService', () => {
 
   describe('createPaymentOrder', () => {
     it('prices the order from the locked job row, not the caller', async () => {
-      build([
-        [
-          'FROM print_jobs',
-          [{ id: JOB, total_amount: '42.50', status: 'pending', payment_status: 'unpaid' }],
-        ],
-      ]);
+      build([['FROM print_jobs', [jobRow({ total_amount: '42.50' })]]]);
 
       await service.createPaymentOrder({ jobId: JOB, amount: 1 });
 
@@ -75,16 +83,55 @@ describe('PaymentService', () => {
 
     it('refuses a second order while one is open', async () => {
       build([
-        [
-          'FROM print_jobs',
-          [{ id: JOB, total_amount: '10', status: 'pending', payment_status: 'unpaid' }],
-        ],
+        ['FROM print_jobs', [jobRow()]],
         ['FROM payment_orders', [{ order_id: 'order_old', status: 'created' }]],
       ]);
 
-      await expect(service.createPaymentOrder({ jobId: JOB, amount: 10 })).rejects.toThrow(
-        /already exists/
-      );
+      const err = await service
+        .createPaymentOrder({ jobId: JOB, amount: 10 })
+        .catch((e: AppError) => e);
+
+      expect((err as AppError).message).toMatch(/already exists/);
+      expect((err as AppError).code).toBe('PAYMENT_ORDER_EXISTS');
+      expect(gw.createOrder).not.toHaveBeenCalled();
+    });
+
+    it('extends the session by the payment grace period once the order exists', async () => {
+      build([['FROM print_jobs', [jobRow()]]]);
+
+      const before = Date.now();
+      await service.createPaymentOrder({ jobId: JOB, amount: 10 });
+
+      const [extend] = db.sqlFor('UPDATE print_sessions SET expires_at = GREATEST');
+      expect(extend.params[0]).toBe('ps-1');
+      const graceMs = env.security.session_payment_grace_minutes * 60_000;
+      expect((extend.params[1] as Date).getTime()).toBeGreaterThanOrEqual(before + graceMs);
+      expect(db.sqlFor('COMMIT')).toHaveLength(1);
+    });
+
+    it.each([
+      ['the window has passed', { session_expires_at: new Date(Date.now() - 1000) }],
+      ['the customer cancelled', { session_status: 'expired' }],
+    ])('410 SESSION_EXPIRED when %s', async (_label, over) => {
+      build([['FROM print_jobs', [jobRow(over)]]]);
+
+      const err = await service
+        .createPaymentOrder({ jobId: JOB, amount: 10 })
+        .catch((e: AppError) => e);
+
+      expect((err as AppError).statusCode).toBe(410);
+      expect((err as AppError).code).toBe('SESSION_EXPIRED');
+      expect(gw.createOrder).not.toHaveBeenCalled();
+    });
+
+    it('409 DOCUMENT_MISSING when the upload was already deleted', async () => {
+      build([['FROM print_jobs', [jobRow({ document_id: null })]]]);
+
+      const err = await service
+        .createPaymentOrder({ jobId: JOB, amount: 10 })
+        .catch((e: AppError) => e);
+
+      expect((err as AppError).code).toBe('DOCUMENT_MISSING');
       expect(gw.createOrder).not.toHaveBeenCalled();
     });
   });
@@ -153,6 +200,40 @@ describe('PaymentService', () => {
 
       expect(enqueue).not.toHaveBeenCalled();
       expect(db.sqlFor('UPDATE print_jobs')).toHaveLength(0);
+    });
+
+    it('does not queue a job whose document was deleted before the money arrived', async () => {
+      build([['FROM payment_orders po', [orderRow({ document_id: null, job_status: 'pending' })]]]);
+
+      const err = await service.verifyAndCapturePayment(params).catch((e: AppError) => e);
+
+      expect((err as AppError).statusCode).toBe(409);
+      expect((err as AppError).code).toBe('DOCUMENT_MISSING');
+      expect(enqueue).not.toHaveBeenCalled();
+      // The money is recorded and the job marked paid, so it shows as a refund candidate.
+      expect(db.sqlFor('INSERT INTO payment_transactions')).toHaveLength(1);
+      expect(db.sqlFor("payment_status = 'paid', paid_at = NOW(), error_message")).toHaveLength(1);
+      expect(db.sqlFor('COMMIT')).toHaveLength(1);
+    });
+
+    it('a repeat verify after printing and cleanup is still a success', async () => {
+      build([
+        [
+          'FROM payment_orders po',
+          [
+            orderRow({
+              status: 'captured',
+              payment_status: 'paid',
+              document_id: null,
+              job_status: 'completed',
+            }),
+          ],
+        ],
+      ]);
+
+      const res = await service.verifyAndCapturePayment(params);
+
+      expect(res.success).toBe(true);
     });
 
     it('rejects when the gateway rejects the signature', async () => {

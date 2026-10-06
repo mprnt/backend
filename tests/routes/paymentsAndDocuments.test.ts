@@ -197,4 +197,21 @@ describe('DELETE /documents/:documentId', () => {
     expect(res.status).toBe(200);
     expect(db.sqlFor('DELETE FROM documents')).toHaveLength(1);
   });
+
+  it('also refuses while a payment order is open, and frees an unpaid job otherwise', async () => {
+    const db = useScriptedDb([
+      sessionRule(TOKEN),
+      ['FROM documents WHERE id', [{ id: DOC, s3_key: 'k', file_type: 'application/pdf' }]],
+    ]);
+
+    await request(app).delete(`${API}/documents/${DOC}`).set('X-Session-Token', TOKEN);
+
+    // The in-use check counts open payment orders, not only paid jobs.
+    expect(db.sqlFor("po.status <> 'failed'")).toHaveLength(1);
+    // The unpaid job for this file is removed so a new file can be priced,
+    // but only one without payment orders (financial history is kept).
+    const [dropJob] = db.sqlFor('DELETE FROM print_jobs');
+    expect(dropJob.sql).toContain('NOT EXISTS (SELECT 1 FROM payment_orders');
+    expect(dropJob.params).toEqual([DOC]);
+  });
 });

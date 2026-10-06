@@ -26,6 +26,8 @@ export interface Environment {
     rate_limit_window_ms: number;
     rate_limit_max_requests: number;
     session_timeout_minutes: number;
+    /** Extra time a session gets once a payment order is created for it. */
+    session_payment_grace_minutes: number;
   };
   cors: {
     origin: string[];
@@ -80,6 +82,12 @@ export interface Environment {
   };
 }
 
+/** A positive integer from the environment, or the fallback when unset or invalid. */
+export function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /** Comma-separated origins; spaces around commas and empty entries are ignored. */
 export function parseOrigins(value: string): string[] {
   return value
@@ -111,7 +119,11 @@ const env: Environment = {
     bcrypt_rounds: parseInt(process.env.BCRYPT_ROUNDS || '12', 10),
     rate_limit_window_ms: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
     rate_limit_max_requests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
-    session_timeout_minutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || '15', 10),
+    // How long a customer has from scanning the QR to paying.
+    session_timeout_minutes: positiveInt(process.env.SESSION_TIMEOUT_MINUTES, 15),
+    // A customer who opened checkout near the end of the window must not lose
+    // their upload while the payment (e.g. UPI) is still settling.
+    session_payment_grace_minutes: positiveInt(process.env.SESSION_PAYMENT_GRACE_MINUTES, 15),
   },
   cors: {
     origin: parseOrigins(process.env.CORS_ORIGIN || 'http://localhost:3000'),
@@ -205,6 +217,9 @@ export function missingProductionSettings(config: Environment): string[] {
     );
   }
   if (!config.payment.razorpay_key_secret) missing.push('RAZORPAY_KEY_SECRET');
+  // Without it the webhook answers 503, and a customer who closes the browser
+  // mid-checkout is charged but their job is never queued.
+  if (!config.payment.razorpay_webhook_secret) missing.push('RAZORPAY_WEBHOOK_SECRET');
   return missing;
 }
 

@@ -117,6 +117,9 @@ export class SessionController {
           createdAt: session.created_at,
           expiresAt: session.expires_at,
           completedAt: session.completed_at,
+          // True when the window has closed but the session is still shown
+          // because it was paid: the client should offer status only.
+          isExpired: sessionService.isSessionExpired(session),
         },
         kiosk: {
           kioskId: kiosk.kiosk_id,

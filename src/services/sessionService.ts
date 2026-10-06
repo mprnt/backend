@@ -1,4 +1,5 @@
 import { db } from '../config/database';
+import env from '../config/environment';
 import { Kiosk, PrintSession, PrintSessionInsert } from '../types/database';
 import { AppError } from '../middleware/errorHandler';
 import logger from '../utils/logger';
@@ -73,12 +74,10 @@ export class SessionService {
   }
 
   /**
-   * Calculate session expiry time (15 minutes from now)
+   * Session expiry: SESSION_TIMEOUT_MINUTES (default 15) from now.
    */
   private calculateExpiry(): Date {
-    const expiry = new Date();
-    expiry.setMinutes(expiry.getMinutes() + 15);
-    return expiry;
+    return new Date(Date.now() + env.security.session_timeout_minutes * 60_000);
   }
 
   /**
@@ -219,9 +218,19 @@ export class SessionService {
       throw new AppError('Session not found', 404);
     }
 
-    // Check if session is expired
+    // An expired session stays readable when the customer has paid: they come
+    // back (reload, rescan) to watch the print or see the refund, and their
+    // job usually finishes after the 15-minute window. Everything else is gone.
     if (this.isSessionExpired(session) && session.status !== 'complete') {
-      throw new AppError('Session has expired', 410);
+      const paid = await db.query(
+        `SELECT 1 FROM print_jobs
+          WHERE session_id = $1 AND payment_status IN ('paid', 'refunded')
+          LIMIT 1`,
+        [session.id]
+      );
+      if (paid.rows.length === 0) {
+        throw new AppError('Session has expired', 410);
+      }
     }
 
     // Get kiosk details
@@ -415,6 +424,23 @@ export class SessionService {
 
     if (session.status === 'complete') {
       throw new AppError('Cannot cancel a completed session', 400);
+    }
+
+    // A paid job prints whatever the session says, so cancelling would only
+    // hide it from the customer while it still prints.
+    const paidJob = await db.query(
+      `SELECT 1 FROM print_jobs
+        WHERE session_id = $1 AND payment_status = 'paid'
+          AND status NOT IN ('completed', 'cancelled', 'failed')
+        LIMIT 1`,
+      [session.id]
+    );
+    if (paidJob.rows.length > 0) {
+      throw new AppError(
+        'This session has a paid print job in progress and cannot be cancelled',
+        409,
+        'SESSION_PAID'
+      );
     }
 
     const result = await db.query<PrintSession>(

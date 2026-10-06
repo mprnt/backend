@@ -402,9 +402,46 @@ describe('SessionService', () => {
         fields: [],
       });
 
+      // No paid job
+      mockDb.query.mockResolvedValueOnce({
+        rows: [],
+        command: 'SELECT',
+        rowCount: 0,
+        oid: 0,
+        fields: [],
+      });
+
       await expect(sessionService.getSessionDetails('S1726999999999')).rejects.toThrow(
         new AppError('Session has expired', 410)
       );
+    });
+
+    it('keeps an expired session readable once it has been paid', async () => {
+      const expiredSession = {
+        ...mockSession,
+        expires_at: new Date(Date.now() - 5 * 60 * 1000),
+        status: 'draft' as const,
+      };
+      const paidJob = { id: 'job-1', status: 'printing', payment_status: 'paid' };
+
+      mockDb.query.mockImplementation(async (sql: string) => {
+        const rows = sql.includes('FROM print_sessions')
+          ? [expiredSession]
+          : sql.includes("payment_status IN ('paid', 'refunded')")
+            ? [{ '?column?': 1 }]
+            : sql.includes('FROM kiosks')
+              ? [mockKiosk]
+              : sql.includes('FROM print_jobs')
+                ? [paidJob]
+                : [];
+        return { rows, command: 'SELECT', rowCount: rows.length, oid: 0, fields: [] };
+      });
+
+      const result = await sessionService.getSessionDetails('S1726999999999');
+
+      expect(result.printJob).toEqual(paidJob);
+      expect(sessionService.isSessionExpired(result.session)).toBe(true);
+      mockDb.query.mockReset();
     });
 
     it('should allow retrieval of expired but completed sessions', async () => {
@@ -471,6 +508,15 @@ describe('SessionService', () => {
         fields: [],
       });
 
+      // Mock paid-job check: none
+      mockDb.query.mockResolvedValueOnce({
+        rows: [],
+        command: 'SELECT',
+        rowCount: 0,
+        oid: 0,
+        fields: [],
+      });
+
       // Mock update session
       const cancelledSession = {
         ...mockSession,
@@ -489,6 +535,37 @@ describe('SessionService', () => {
 
       expect(result.status).toBe('expired');
       expect(result.completed_at).toBeDefined();
+    });
+
+    it('refuses to cancel a session whose paid job is still printing', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: '456e4567-e89b-12d3-a456-426614174001',
+              session_id: 'S1726999999999',
+              status: 'draft',
+              expires_at: new Date(Date.now() + 60_000),
+            },
+          ],
+          command: 'SELECT',
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+        })
+        .mockResolvedValueOnce({
+          rows: [{ '?column?': 1 }],
+          command: 'SELECT',
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+        });
+
+      const err = await sessionService.cancelSession('S1726999999999').catch((e: AppError) => e);
+
+      expect((err as AppError).statusCode).toBe(409);
+      expect((err as AppError).code).toBe('SESSION_PAID');
+      expect(mockDb.query).toHaveBeenCalledTimes(2); // no UPDATE
     });
 
     it('should throw error if session not found', async () => {

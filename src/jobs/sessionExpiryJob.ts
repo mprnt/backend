@@ -25,11 +25,22 @@ export async function processSessionExpiry(): Promise<{
     // paid job whose document has been deleted can never print: the Pi
     // downloads that exact object. Retaining a file for longer than the session
     // window is the lesser problem by a wide margin.
-    const expiredSessionsResult = await db.query(
+    //
+    // A session the customer cancelled is already 'expired' but still holds its
+    // upload; it is picked up here too, or that file would never be deleted.
+    const expiredSessionsResult = await db.query<{
+      id: string;
+      session_id: string;
+      expires_at: Date;
+      status: string;
+    }>(
       `SELECT ps.id, ps.session_id, ps.expires_at, ps.status
        FROM print_sessions ps
-       WHERE ps.expires_at < CURRENT_TIMESTAMP
-         AND ps.status NOT IN ('expired', 'complete')
+       WHERE (
+               (ps.expires_at < CURRENT_TIMESTAMP AND ps.status NOT IN ('expired', 'complete'))
+               OR (ps.status = 'expired'
+                   AND EXISTS (SELECT 1 FROM documents d WHERE d.session_id = ps.id))
+             )
          AND NOT EXISTS (
            SELECT 1
              FROM print_jobs pj
@@ -57,10 +68,11 @@ export async function processSessionExpiry(): Promise<{
         // Start a transaction for each session
         await db.transaction(async (client) => {
           // Find associated documents
-          const documentsResult = await client.query(
-            'SELECT id, s3_key FROM documents WHERE session_id = $1',
-            [session.id]
-          );
+          const documentsResult = await client.query<{
+            id: string;
+            s3_key: string | null;
+            file_type: string | null;
+          }>('SELECT id, s3_key, file_type FROM documents WHERE session_id = $1', [session.id]);
 
           const documents = documentsResult.rows;
 
@@ -69,7 +81,7 @@ export async function processSessionExpiry(): Promise<{
             logger.info('Documents to delete from S3', {
               sessionId: session.session_id,
               documentCount: documents.length,
-              s3Keys: documents.map((d: any) => d.s3_key),
+              s3Keys: documents.map((d) => d.s3_key),
             });
 
             for (const doc of documents) {
@@ -77,6 +89,11 @@ export async function processSessionExpiry(): Promise<{
                 try {
                   const { storageService } = await import('../services/storageService');
                   await storageService.deleteFile(doc.s3_key);
+                  // The background processor writes a thumbnail for images
+                  // (documentProcessor.generateThumbnail); it is customer data too.
+                  if (doc.file_type?.startsWith('image/')) {
+                    await storageService.deleteFile(`${doc.s3_key}-thumb.jpg`);
+                  }
                 } catch (err) {
                   logger.error(`Failed to delete document from S3: ${doc.s3_key}`, {
                     error: err instanceof Error ? err.message : err,
@@ -102,7 +119,7 @@ export async function processSessionExpiry(): Promise<{
           // Update session status to expired
           await client.query(
             `UPDATE print_sessions
-             SET status = 'expired', completed_at = CURRENT_TIMESTAMP
+             SET status = 'expired', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
              WHERE id = $1`,
             [session.id]
           );

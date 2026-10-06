@@ -1,9 +1,14 @@
 import { processSessionExpiry } from '../../src/jobs/sessionExpiryJob';
 import { db } from '../../src/config/database';
+import { storageService } from '../../src/services/storageService';
 
 // Mock database
 jest.mock('../../src/config/database');
+jest.mock('../../src/services/storageService', () => ({
+  storageService: { deleteFile: jest.fn().mockResolvedValue(undefined) },
+}));
 const mockDb = db as jest.Mocked<typeof db>;
+const deleteFile = storageService.deleteFile as jest.Mock;
 
 describe('Session Expiry Job', () => {
   beforeEach(() => {
@@ -58,6 +63,54 @@ describe('Session Expiry Job', () => {
 
       expect(result.expiredCount).toBe(2);
       expect(result.documentsDeleted).toBe(2);
+    });
+
+    it("deletes an image's thumbnail along with the original", async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'session-1', session_id: 'S1', status: 'draft' }],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: [],
+      });
+      const mockClient = {
+        query: jest
+          .fn()
+          .mockResolvedValueOnce({
+            rows: [
+              { id: 'doc-1', s3_key: 'sessions/S1/a.png', file_type: 'image/png' },
+              { id: 'doc-2', s3_key: 'sessions/S1/b.pdf', file_type: 'application/pdf' },
+            ],
+          })
+          .mockResolvedValue({ rows: [] }),
+      };
+      mockDb.transaction.mockImplementation(async (callback) => callback(mockClient as any));
+
+      await processSessionExpiry();
+
+      expect(deleteFile.mock.calls.map(([key]) => key)).toEqual([
+        'sessions/S1/a.png',
+        'sessions/S1/a.png-thumb.jpg',
+        'sessions/S1/b.pdf',
+      ]);
+    });
+
+    it('also cleans up sessions the customer cancelled, which still hold their upload', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [],
+        command: 'SELECT',
+        rowCount: 0,
+        oid: 0,
+        fields: [],
+      });
+
+      await processSessionExpiry();
+
+      const sql = String(mockDb.query.mock.calls[0][0]);
+      expect(sql).toContain("ps.status = 'expired'");
+      expect(sql).toContain('FROM documents d WHERE d.session_id = ps.id');
+      // Paid, unfinished jobs keep their file whatever the session status.
+      expect(sql).toContain("pj.payment_status = 'paid'");
     });
 
     it('should return zero counts when no expired sessions found', async () => {
@@ -174,7 +227,6 @@ describe('Session Expiry Job', () => {
     it('should throw error if database query fails', async () => {
       // Mock database error
       mockDb.query.mockRejectedValueOnce(new Error('Database connection failed'));
-
 
       await expect(processSessionExpiry()).rejects.toThrow('Database connection failed');
     });
