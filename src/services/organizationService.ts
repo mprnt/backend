@@ -1,7 +1,38 @@
-import { Database, db } from '../config/database';
+import { Database, QueryResultRow, db } from '../config/database';
 import { AppError } from '../utils/errors';
 import { Organization, OrganizationStatus } from '../types/admin';
+import { BusinessModelId } from '../types/businessModels';
 import logger from '../utils/logger';
+
+interface OrganizationRow extends QueryResultRow {
+  id: string;
+  name: string;
+  slug: string;
+  status: OrganizationStatus;
+  business_model: BusinessModelId | null;
+  timezone: string;
+  contact_email: string | null;
+  contact_phone: string | null;
+  kiosk_count?: string;
+  admin_count?: string;
+  created_at: Date;
+}
+
+interface CountRow extends QueryResultRow {
+  count: string;
+}
+
+interface KioskListRow extends QueryResultRow {
+  id: string;
+  kiosk_id: string;
+  name: string;
+  location: string;
+  status: string;
+  organization_id: string;
+  organization_name: string | null;
+  printers_online: string;
+  printers_total: string;
+}
 
 export class OrganizationService {
   constructor(private database: Database = db) {}
@@ -14,12 +45,13 @@ export class OrganizationService {
       .slice(0, 48);
   }
 
-  private map(row: any): Organization {
+  private map(row: OrganizationRow): Organization {
     return {
       id: row.id,
       name: row.name,
       slug: row.slug,
       status: row.status,
+      businessModel: row.business_model ?? null,
       timezone: row.timezone,
       contactEmail: row.contact_email,
       contactPhone: row.contact_phone,
@@ -31,6 +63,7 @@ export class OrganizationService {
 
   async create(params: {
     name: string;
+    businessModel?: BusinessModelId | null;
     timezone?: string;
     contactEmail?: string;
     contactPhone?: string;
@@ -52,13 +85,15 @@ export class OrganizationService {
       slug = `${base}-${attempt + 1}`;
     }
 
-    const result = await this.database.query(
-      `INSERT INTO organizations (name, slug, timezone, contact_email, contact_phone, notes)
-       VALUES ($1, $2, COALESCE($3, 'Asia/Kolkata'), $4, $5, $6)
+    const result = await this.database.query<OrganizationRow>(
+      `INSERT INTO organizations
+         (name, slug, business_model, timezone, contact_email, contact_phone, notes)
+       VALUES ($1, $2, $3, COALESCE($4, 'Asia/Kolkata'), $5, $6, $7)
        RETURNING *`,
       [
         params.name,
         slug,
+        params.businessModel ?? null,
         params.timezone ?? null,
         params.contactEmail ?? null,
         params.contactPhone ?? null,
@@ -71,7 +106,12 @@ export class OrganizationService {
   }
 
   async list(
-    params: { status?: OrganizationStatus; search?: string } = {}
+    params: {
+      status?: OrganizationStatus;
+      search?: string;
+      /** 'none' selects partners with no model recorded yet. */
+      businessModel?: BusinessModelId | 'none';
+    } = {}
   ): Promise<Organization[]> {
     const conditions = ['o.deleted_at IS NULL'];
     const args: unknown[] = [];
@@ -84,8 +124,14 @@ export class OrganizationService {
       args.push(`%${params.search}%`);
       conditions.push(`(o.name ILIKE $${args.length} OR o.slug ILIKE $${args.length})`);
     }
+    if (params.businessModel === 'none') {
+      conditions.push('o.business_model IS NULL');
+    } else if (params.businessModel) {
+      args.push(params.businessModel);
+      conditions.push(`o.business_model = $${args.length}`);
+    }
 
-    const result = await this.database.query(
+    const result = await this.database.query<OrganizationRow>(
       `SELECT o.*,
               (SELECT COUNT(*) FROM kiosks k WHERE k.organization_id = o.id) AS kiosk_count,
               (SELECT COUNT(*) FROM admin_users au
@@ -100,7 +146,7 @@ export class OrganizationService {
   }
 
   async getById(id: string): Promise<Organization> {
-    const result = await this.database.query(
+    const result = await this.database.query<OrganizationRow>(
       `SELECT o.*,
               (SELECT COUNT(*) FROM kiosks k WHERE k.organization_id = o.id) AS kiosk_count,
               (SELECT COUNT(*) FROM admin_users au
@@ -121,6 +167,7 @@ export class OrganizationService {
     id: string,
     params: {
       name?: string;
+      businessModel?: BusinessModelId | null;
       timezone?: string;
       contactEmail?: string;
       contactPhone?: string;
@@ -138,6 +185,7 @@ export class OrganizationService {
     };
 
     assign('name', params.name);
+    assign('business_model', params.businessModel);
     assign('timezone', params.timezone);
     assign('contact_email', params.contactEmail);
     assign('contact_phone', params.contactPhone);
@@ -149,7 +197,7 @@ export class OrganizationService {
 
     sets.push('updated_at = NOW()');
 
-    const result = await this.database.query(
+    const result = await this.database.query<OrganizationRow>(
       `UPDATE organizations SET ${sets.join(', ')}
         WHERE id = $1 AND deleted_at IS NULL
         RETURNING *`,
@@ -168,7 +216,7 @@ export class OrganizationService {
    * taking new work, without destroying any history.
    */
   async setStatus(id: string, status: OrganizationStatus): Promise<Organization> {
-    const result = await this.database.query(
+    const result = await this.database.query<OrganizationRow>(
       `UPDATE organizations SET status = $2, updated_at = NOW()
         WHERE id = $1 AND deleted_at IS NULL
         RETURNING *`,
@@ -198,7 +246,7 @@ export class OrganizationService {
    * live kiosk would leave printers serving a shop that no longer exists.
    */
   async softDelete(id: string): Promise<void> {
-    const kiosks = await this.database.query(
+    const kiosks = await this.database.query<CountRow>(
       `SELECT COUNT(*) AS count FROM kiosks WHERE organization_id = $1`,
       [id]
     );
@@ -251,12 +299,16 @@ export class OrganizationService {
 
   async listKiosks(organizationId: string | null): Promise<unknown[]> {
     const scoped = organizationId !== null;
-    const result = await this.database.query(
+    const result = await this.database.query<KioskListRow>(
       `SELECT k.id, k.kiosk_id, k.name, k.location, k.status, k.organization_id,
               o.name AS organization_name,
+              -- 'busy' is a printer mid-job, which is working; only offline or
+              -- revoked means work cannot reach it.
               (SELECT COUNT(*) FROM printers p
-                WHERE p.kiosk_id = k.id AND p.status = 'online') AS printers_online,
-              (SELECT COUNT(*) FROM printers p WHERE p.kiosk_id = k.id) AS printers_total
+                WHERE p.kiosk_id = k.id AND p.revoked_at IS NULL
+                  AND p.status IN ('online', 'busy')) AS printers_online,
+              (SELECT COUNT(*) FROM printers p
+                WHERE p.kiosk_id = k.id AND p.revoked_at IS NULL) AS printers_total
          FROM kiosks k
          LEFT JOIN organizations o ON o.id = k.organization_id
         ${scoped ? 'WHERE k.organization_id = $1' : ''}
@@ -264,7 +316,7 @@ export class OrganizationService {
       scoped ? [organizationId] : []
     );
 
-    return result.rows.map((r: any) => ({
+    return result.rows.map((r) => ({
       id: r.id,
       kioskId: r.kiosk_id,
       name: r.name,
@@ -272,8 +324,8 @@ export class OrganizationService {
       status: r.status,
       organizationId: r.organization_id,
       organizationName: r.organization_name,
-      printersOnline: parseInt(r.printers_online) || 0,
-      printersTotal: parseInt(r.printers_total) || 0,
+      printersOnline: parseInt(r.printers_online, 10) || 0,
+      printersTotal: parseInt(r.printers_total, 10) || 0,
     }));
   }
 }

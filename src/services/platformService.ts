@@ -1,4 +1,4 @@
-import { Database, db } from '../config/database';
+import { Database, QueryResultRow, db } from '../config/database';
 import env from '../config/environment';
 import { AppError } from '../utils/errors';
 import { ReportPeriod } from '../types/admin';
@@ -76,22 +76,93 @@ export interface Comparison {
   change: { revenuePct: number | null; paidJobsPct: number | null; pagesPct: number | null };
 }
 
+type DatabaseNumber = string | number;
+
+interface AggregateRow extends QueryResultRow {
+  cur_revenue: DatabaseNumber;
+  cur_paid: DatabaseNumber;
+  cur_completed: DatabaseNumber;
+  cur_failed: DatabaseNumber;
+  cur_pages: DatabaseNumber;
+  prev_revenue: DatabaseNumber;
+  prev_paid: DatabaseNumber;
+  prev_completed: DatabaseNumber;
+  prev_failed: DatabaseNumber;
+  prev_pages: DatabaseNumber;
+}
+
+interface TimezoneRow extends QueryResultRow {
+  timezone: string;
+}
+
+interface OrganizationComparisonRow extends AggregateRow {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  timezone: string;
+  business_model: string | null;
+  days_since_paid: DatabaseNumber | null;
+  age_days: DatabaseNumber;
+  kiosks: DatabaseNumber;
+  printers_online: DatabaseNumber;
+  printers_total: DatabaseNumber;
+  last_paid_at: string | null;
+}
+
+interface OrganizationSummary {
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    businessModel: string | null;
+    timezone: string;
+  };
+  current: WindowTotals;
+  previous: WindowTotals;
+  change: Comparison['change'];
+  fulfilmentRate: number | null;
+  kiosks: number;
+  printersOnline: number;
+  printersTotal: number;
+  lastPaidAt: string | null;
+  daysSinceLastPaid: number | null;
+  activity: ShopActivity;
+}
+
 function pct(current: number, previous: number): number | null {
   if (previous === 0) return null;
   return Math.round(((current - previous) / previous) * 1000) / 10;
 }
 
-function totals(r: any, prefix: 'cur' | 'prev'): WindowTotals {
+function totals(r: AggregateRow, prefix: 'cur' | 'prev'): WindowTotals {
+  const values =
+    prefix === 'cur'
+      ? {
+          revenue: r.cur_revenue,
+          paid: r.cur_paid,
+          completed: r.cur_completed,
+          failed: r.cur_failed,
+          pages: r.cur_pages,
+        }
+      : {
+          revenue: r.prev_revenue,
+          paid: r.prev_paid,
+          completed: r.prev_completed,
+          failed: r.prev_failed,
+          pages: r.prev_pages,
+        };
   return {
-    revenue: Number(r[`${prefix}_revenue`]) || 0,
-    paidJobs: parseInt(r[`${prefix}_paid`]) || 0,
-    completedJobs: parseInt(r[`${prefix}_completed`]) || 0,
-    failedJobs: parseInt(r[`${prefix}_failed`]) || 0,
-    pages: parseInt(r[`${prefix}_pages`]) || 0,
+    revenue: Number(values.revenue) || 0,
+    paidJobs: parseInt(String(values.paid), 10) || 0,
+    completedJobs: parseInt(String(values.completed), 10) || 0,
+    failedJobs: parseInt(String(values.failed), 10) || 0,
+    pages: parseInt(String(values.pages), 10) || 0,
   };
 }
 
-function compare(r: any): Comparison {
+function compare(r: AggregateRow): Comparison {
   const current = totals(r, 'cur');
   const previous = totals(r, 'prev');
   return {
@@ -121,7 +192,7 @@ export class PlatformService {
     let timezone = 'Asia/Kolkata';
 
     if (organizationId) {
-      const org = await this.database.query(
+      const org = await this.database.query<TimezoneRow>(
         `SELECT timezone FROM organizations WHERE id = $1 AND deleted_at IS NULL`,
         [organizationId]
       );
@@ -131,7 +202,7 @@ export class PlatformService {
 
     const { trunc, step } = UNIT[period];
 
-    const result = await this.database.query(
+    const result = await this.database.query<AggregateRow>(
       `WITH w AS (SELECT ${windows('$3')})
        SELECT ${aggregates('pj', 'w')}
          FROM w
@@ -154,15 +225,15 @@ export class PlatformService {
   async getOrganizationComparison(period: ReportPeriod): Promise<{
     period: ReportPeriod;
     inactiveAfterDays: number;
-    organizations: unknown[];
+    organizations: OrganizationSummary[];
     totals: Comparison;
   }> {
     const { trunc, step } = UNIT[period];
     const inactiveDays = env.thresholds.inactive_shop_days;
 
-    const result = await this.database.query(
+    const result = await this.database.query<OrganizationComparisonRow>(
       `WITH w AS (
-         SELECT o.id, o.name, o.slug, o.status, o.timezone, o.created_at,
+         SELECT o.id, o.name, o.slug, o.status, o.timezone, o.business_model, o.created_at,
                 ${windows('o.timezone')}
            FROM organizations o
           WHERE o.deleted_at IS NULL
@@ -187,12 +258,12 @@ export class PlatformService {
          SELECT k.organization_id AS id,
                 COUNT(DISTINCT k.id)                                                   AS kiosks,
                 COUNT(p.id) FILTER (WHERE p.revoked_at IS NULL)                        AS printers_total,
-                COUNT(p.id) FILTER (WHERE p.revoked_at IS NULL AND p.status = 'online') AS printers_online
+                COUNT(p.id) FILTER (WHERE p.revoked_at IS NULL AND p.status IN ('online','busy')) AS printers_online
            FROM kiosks k
            LEFT JOIN printers p ON p.kiosk_id = k.id
           GROUP BY k.organization_id
        )
-       SELECT w.id, w.name, w.slug, w.status, w.timezone, agg.*,
+       SELECT w.id, w.name, w.slug, w.status, w.timezone, w.business_model, agg.*,
               -- Formatted as text in SQL so the value is host-timezone independent.
               to_char(lp.at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')                            AS last_paid_at,
               EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - lp.at)) / 86400.0     AS days_since_paid,
@@ -208,7 +279,7 @@ export class PlatformService {
       [trunc, step]
     );
 
-    const organizations = result.rows.map((r: any) => {
+    const organizations = result.rows.map((r) => {
       const comparison = compare(r);
       const daysSincePaid = r.days_since_paid === null ? null : Number(r.days_since_paid);
       const ageDays = Number(r.age_days) || 0;
@@ -226,14 +297,15 @@ export class PlatformService {
           name: r.name,
           slug: r.slug,
           status: r.status,
+          businessModel: r.business_model ?? null,
           timezone: r.timezone,
         },
         ...comparison,
         fulfilmentRate:
           paid > 0 ? Math.round((comparison.current.completedJobs / paid) * 1000) / 10 : null,
-        kiosks: parseInt(r.kiosks) || 0,
-        printersOnline: parseInt(r.printers_online) || 0,
-        printersTotal: parseInt(r.printers_total) || 0,
+        kiosks: parseInt(String(r.kiosks), 10) || 0,
+        printersOnline: parseInt(String(r.printers_online), 10) || 0,
+        printersTotal: parseInt(String(r.printers_total), 10) || 0,
         lastPaidAt: r.last_paid_at,
         daysSinceLastPaid: daysSincePaid === null ? null : Math.floor(daysSincePaid),
         activity,
@@ -243,7 +315,7 @@ export class PlatformService {
     // Platform totals are the sum of the rows, so the table and its footer can
     // never disagree.
     const sum = (key: keyof WindowTotals, which: 'current' | 'previous') =>
-      organizations.reduce((acc: number, o: any) => acc + o[which][key], 0);
+      organizations.reduce((acc, organization) => acc + organization[which][key], 0);
     const keys: (keyof WindowTotals)[] = [
       'revenue',
       'paidJobs',

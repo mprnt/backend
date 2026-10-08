@@ -26,6 +26,8 @@ import {
   changePasswordSchema,
   createOrganizationSchema,
   updateOrganizationSchema,
+  updatePrinterSchema,
+  listOrganizationsQuerySchema,
   organizationStatusSchema,
   assignKioskSchema,
   createAdminSchema,
@@ -93,7 +95,12 @@ router.post(
   validate(createOrganizationSchema),
   h(c.createOrganization.bind(c))
 );
-router.get('/organizations', requireSuperAdmin, h(c.listOrganizations.bind(c)));
+router.get(
+  '/organizations',
+  requireSuperAdmin,
+  validate(listOrganizationsQuerySchema, 'query'),
+  h(c.listOrganizations.bind(c))
+);
 router.get(
   '/organizations/:id',
   requireSuperAdmin,
@@ -310,6 +317,14 @@ router.post(
   requireSuperAdmin,
   validate(adminEnrollPrinterSchema),
   h(c.enrollPrinter.bind(c))
+);
+router.patch(
+  '/printers/:printerId',
+  resolveTenant,
+  requirePermission(PERMISSIONS.PRINTERS_MANAGE),
+  validate(printerParamSchema, 'params'),
+  validate(updatePrinterSchema),
+  h(c.updatePrinter.bind(c))
 );
 router.post(
   '/printers/:printerId/rotate-key',

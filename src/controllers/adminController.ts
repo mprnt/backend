@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { ParamsDictionary } from 'express-serve-static-core';
 import { adminAuthService } from '../services/adminAuthService';
 import { adminUserService } from '../services/adminUserService';
 import { organizationService } from '../services/organizationService';
@@ -9,10 +10,58 @@ import { platformService } from '../services/platformService';
 import { fleetService } from '../services/fleetService';
 import { printerAuthService } from '../services/printerAuthService';
 import { queueService } from '../services/queueService';
-import { db } from '../config/database';
+import { db, QueryResultRow } from '../config/database';
 import { AppError } from '../utils/errors';
 import { ReportPeriod, ROLE_PERMISSIONS, PERMISSIONS } from '../types/admin';
 import logger from '../utils/logger';
+import { BusinessModelId } from '../types/businessModels';
+
+type RequestWithBody<Body> = Request<ParamsDictionary, unknown, Body>;
+type LoginBody = { email: string; password: string };
+type RefreshBody = { refreshToken: string };
+type ChangePasswordBody = { currentPassword: string; newPassword: string };
+type CreateAdminBody = Omit<Parameters<typeof adminUserService.create>[0], 'createdBy'>;
+type PermissionOverrideBody = Pick<
+  Parameters<typeof adminUserService.setPermissionOverride>[0],
+  'permission' | 'effect'
+>;
+type EnrollPrinterBody = {
+  printerId: string;
+  kioskId: string;
+  name: string;
+  capabilities: Parameters<typeof fleetService.enrollPrinter>[0]['capabilities'];
+  isStation?: boolean;
+  stationName?: string | null;
+};
+type CreatePriceListBody = {
+  organizationId?: string | null;
+  kioskId?: string | null;
+  bwPerPage: number;
+  colorPerPage: number;
+  minCharge?: number;
+  effectiveFrom?: string;
+};
+
+interface OrganizationIdRow extends QueryResultRow {
+  organization_id: string | null;
+}
+
+interface PriceListRow extends QueryResultRow {
+  id: string;
+  organization_id: string | null;
+  organization_name: string | null;
+  kiosk_id: string | null;
+  kiosk_code: string | null;
+  bw_per_page: string | number;
+  color_per_page: string | number;
+  min_charge: string | number;
+  effective_from: Date;
+  created_at: Date;
+}
+
+interface PriceListIdRow extends QueryResultRow {
+  id: string;
+}
 
 /** Shared parsing of the report filters, after Joi has validated them. */
 function reportFilters(req: Request) {
@@ -20,6 +69,7 @@ function reportFilters(req: Request) {
   return {
     organizationId: req.tenantId ?? null,
     kioskId: q.kioskId,
+    printerId: q.printerId,
     period: (q.period as ReportPeriod) || 'month',
     from: q.from,
     to: q.to,
@@ -31,7 +81,7 @@ class AdminController {
   // Authentication
   // -------------------------------------------------------------------------
 
-  async login(req: Request, res: Response): Promise<void> {
+  async login(req: RequestWithBody<LoginBody>, res: Response): Promise<void> {
     const { email, password } = req.body;
 
     const { tokens, principal, mustChangePassword } = await adminAuthService.login({
@@ -66,7 +116,7 @@ class AdminController {
     });
   }
 
-  async refresh(req: Request, res: Response): Promise<void> {
+  async refresh(req: RequestWithBody<RefreshBody>, res: Response): Promise<void> {
     const tokens = await adminAuthService.refresh(
       req.body.refreshToken,
       req.ip,
@@ -76,7 +126,7 @@ class AdminController {
     res.json({ status: 'success', data: tokens });
   }
 
-  async logout(req: Request, res: Response): Promise<void> {
+  async logout(req: RequestWithBody<RefreshBody>, res: Response): Promise<void> {
     await adminAuthService.logout(req.body.refreshToken);
     await auditService.fromRequest(req, 'admin.logout');
     res.json({ status: 'success', message: 'Signed out' });
@@ -105,7 +155,7 @@ class AdminController {
     });
   }
 
-  async changePassword(req: Request, res: Response): Promise<void> {
+  async changePassword(req: RequestWithBody<ChangePasswordBody>, res: Response): Promise<void> {
     const { currentPassword, newPassword } = req.body;
 
     await adminAuthService.changePassword(req.admin!.id, currentPassword, newPassword);
@@ -121,14 +171,19 @@ class AdminController {
   // Organizations (super admin)
   // -------------------------------------------------------------------------
 
-  async createOrganization(req: Request, res: Response): Promise<void> {
+  async createOrganization(
+    req: RequestWithBody<Parameters<typeof organizationService.create>[0]>,
+    res: Response
+  ): Promise<void> {
     const org = await organizationService.create(req.body);
 
     await auditService.fromRequest(req, 'organization.created', {
       resourceType: 'organization',
       resourceId: org.id,
       organizationId: org.id,
-      details: { name: org.name },
+      // The model is a commercial term, so it belongs in the record of how
+      // this partner was set up, not only in later change entries.
+      details: { name: org.name, businessModel: org.businessModel },
     });
 
     res.status(201).json({ status: 'success', data: org });
@@ -138,6 +193,7 @@ class AdminController {
     const orgs = await organizationService.list({
       status: req.query.status as 'active' | 'suspended' | undefined,
       search: req.query.search as string | undefined,
+      businessModel: req.query.businessModel as BusinessModelId | 'none' | undefined,
     });
 
     res.json({ status: 'success', data: { count: orgs.length, organizations: orgs } });
@@ -148,7 +204,13 @@ class AdminController {
     res.json({ status: 'success', data: org });
   }
 
-  async updateOrganization(req: Request, res: Response): Promise<void> {
+  async updateOrganization(
+    req: RequestWithBody<Parameters<typeof organizationService.update>[1]>,
+    res: Response
+  ): Promise<void> {
+    // Read first: a model change is a commercial decision, and the audit entry
+    // is only useful if it says what the model changed *from*.
+    const before = await organizationService.getById(req.params.id);
     const org = await organizationService.update(req.params.id, req.body);
 
     await auditService.fromRequest(req, 'organization.updated', {
@@ -158,10 +220,22 @@ class AdminController {
       details: req.body,
     });
 
+    if (before.businessModel !== org.businessModel) {
+      await auditService.fromRequest(req, 'organization.model_changed', {
+        resourceType: 'organization',
+        resourceId: org.id,
+        organizationId: org.id,
+        details: { from: before.businessModel, to: org.businessModel },
+      });
+    }
+
     res.json({ status: 'success', data: org });
   }
 
-  async setOrganizationStatus(req: Request, res: Response): Promise<void> {
+  async setOrganizationStatus(
+    req: RequestWithBody<{ status: Parameters<typeof organizationService.setStatus>[1] }>,
+    res: Response
+  ): Promise<void> {
     const org = await organizationService.setStatus(req.params.id, req.body.status);
 
     await auditService.fromRequest(req, `organization.${req.body.status}`, {
@@ -185,7 +259,7 @@ class AdminController {
     res.json({ status: 'success', message: 'Organization deleted' });
   }
 
-  async assignKiosk(req: Request, res: Response): Promise<void> {
+  async assignKiosk(req: RequestWithBody<{ kioskId: string }>, res: Response): Promise<void> {
     await organizationService.assignKiosk(req.body.kioskId, req.params.id);
 
     await auditService.fromRequest(req, 'kiosk.assigned', {
@@ -206,7 +280,7 @@ class AdminController {
   // Admin users
   // -------------------------------------------------------------------------
 
-  async createAdmin(req: Request, res: Response): Promise<void> {
+  async createAdmin(req: RequestWithBody<CreateAdminBody>, res: Response): Promise<void> {
     const { user, temporaryPassword } = await adminUserService.create({
       ...req.body,
       createdBy: req.admin!.id,
@@ -241,7 +315,10 @@ class AdminController {
     res.json({ status: 'success', data: user });
   }
 
-  async updateAdmin(req: Request, res: Response): Promise<void> {
+  async updateAdmin(
+    req: RequestWithBody<Parameters<typeof adminUserService.update>[2]>,
+    res: Response
+  ): Promise<void> {
     const user = await adminUserService.update(req.params.id, req.tenantId ?? null, req.body);
 
     await auditService.fromRequest(req, 'admin_user.updated', {
@@ -297,7 +374,10 @@ class AdminController {
     res.json({ status: 'success', data });
   }
 
-  async setAdminPermission(req: Request, res: Response): Promise<void> {
+  async setAdminPermission(
+    req: RequestWithBody<PermissionOverrideBody>,
+    res: Response
+  ): Promise<void> {
     await adminUserService.setPermissionOverride({
       adminUserId: req.params.id,
       organizationId: req.tenantId ?? null,
@@ -317,7 +397,7 @@ class AdminController {
   }
 
   /** The permission catalogue, so the UI can render a grid without hardcoding. */
-  async listPermissionCatalogue(_req: Request, res: Response): Promise<void> {
+  listPermissionCatalogue(_req: Request, res: Response): Promise<void> {
     res.json({
       status: 'success',
       data: {
@@ -328,6 +408,7 @@ class AdminController {
         })),
       },
     });
+    return Promise.resolve();
   }
 
   // -------------------------------------------------------------------------
@@ -341,10 +422,10 @@ class AdminController {
     const summary = await dashboardService.getSummary({ ...f, ...range });
 
     // Period-over-period only makes sense for a named period. An explicit
-    // from/to range has no natural "previous", and a kiosk filter is a
-    // drill-down rather than a trend view.
+    // from/to range has no natural "previous", and a QR point or printer
+    // filter is a drill-down rather than a trend view.
     const comparison =
-      !f.from && !f.to && !f.kioskId
+      !f.from && !f.to && !f.kioskId && !f.printerId
         ? await platformService.getComparison(f.organizationId, f.period)
         : null;
 
@@ -368,7 +449,10 @@ class AdminController {
   // Kiosks
   // -------------------------------------------------------------------------
 
-  async createKiosk(req: Request, res: Response): Promise<void> {
+  async createKiosk(
+    req: RequestWithBody<Parameters<typeof fleetService.createKiosk>[0]>,
+    res: Response
+  ): Promise<void> {
     const kiosk = await fleetService.createKiosk(req.body);
 
     await auditService.fromRequest(req, 'kiosk.created', {
@@ -381,7 +465,10 @@ class AdminController {
     res.status(201).json({ status: 'success', data: kiosk });
   }
 
-  async updateKiosk(req: Request, res: Response): Promise<void> {
+  async updateKiosk(
+    req: RequestWithBody<Parameters<typeof fleetService.updateKiosk>[2]>,
+    res: Response
+  ): Promise<void> {
     // Super admin (tenantId null) may edit any kiosk; shop staff only their own.
     const scope = req.admin!.isSuperAdmin ? null : req.admin!.organizationId;
     const kiosk = await fleetService.updateKiosk(req.params.id, scope, req.body);
@@ -401,12 +488,14 @@ class AdminController {
   // -------------------------------------------------------------------------
 
   /** Super admin: enroll a printer and show its key once. */
-  async enrollPrinter(req: Request, res: Response): Promise<void> {
+  async enrollPrinter(req: RequestWithBody<EnrollPrinterBody>, res: Response): Promise<void> {
     const issued = await fleetService.enrollPrinter({
       printerId: req.body.printerId,
       kioskUuid: req.body.kioskId,
       name: req.body.name,
       capabilities: req.body.capabilities,
+      isStation: req.body.isStation,
+      stationName: req.body.stationName,
       enrolledByDevice: false,
     });
 
@@ -430,6 +519,34 @@ class AdminController {
   }
 
   /** Super admin: replace a printer's key. The old key stops working immediately. */
+  async updatePrinter(
+    req: RequestWithBody<Parameters<typeof fleetService.updatePrinter>[2]>,
+    res: Response
+  ): Promise<void> {
+    // Whether a printer is an MPrnt station is a commercial fact about who
+    // supplied the hardware, so only the platform may set it. A shop with
+    // printers:manage can still rename its own printer.
+    const touchesStation = req.body.isStation !== undefined || req.body.stationName !== undefined;
+    if (touchesStation && !req.admin!.isSuperAdmin) {
+      throw new AppError('Only MPrnt can change whether a printer is a station', 403);
+    }
+
+    const printer = await fleetService.updatePrinter(req.params.printerId, req.tenantId ?? null, {
+      name: req.body.name,
+      isStation: req.body.isStation,
+      stationName: req.body.stationName === '' ? null : req.body.stationName,
+    });
+
+    await auditService.fromRequest(req, 'printer.updated', {
+      resourceType: 'printer',
+      resourceId: printer.printerId,
+      organizationId: printer.organizationId,
+      details: req.body,
+    });
+
+    res.json({ status: 'success', data: printer });
+  }
+
   async rotatePrinterKey(req: Request, res: Response): Promise<void> {
     const { printerId } = req.params;
     const organizationId = await fleetService.printerOrganization(printerId, null);
@@ -588,10 +705,10 @@ class AdminController {
     // kioskId arrives from the query string. Without this check a shop admin
     // could pass another shop's kiosk and read its negotiated rates.
     if (kioskId && req.tenantId) {
-      const owned = await db.query(`SELECT 1 FROM kiosks WHERE id = $1 AND organization_id = $2`, [
-        kioskId,
-        req.tenantId,
-      ]);
+      const owned = await db.query<OrganizationIdRow>(
+        `SELECT organization_id FROM kiosks WHERE id = $1 AND organization_id = $2`,
+        [kioskId, req.tenantId]
+      );
       if (owned.rows.length === 0) {
         throw new AppError('Kiosk not found', 404);
       }
@@ -605,7 +722,7 @@ class AdminController {
   async listPriceLists(req: Request, res: Response): Promise<void> {
     const scoped = req.tenantId !== null && req.tenantId !== undefined;
 
-    const result = await db.query(
+    const result = await db.query<PriceListRow>(
       `SELECT pl.*, o.name AS organization_name, k.kiosk_id AS kiosk_code
          FROM price_lists pl
          LEFT JOIN organizations o ON o.id = pl.organization_id
@@ -619,7 +736,7 @@ class AdminController {
     res.json({
       status: 'success',
       data: {
-        priceLists: result.rows.map((r: any) => ({
+        priceLists: result.rows.map((r) => ({
           id: r.id,
           scope: r.kiosk_id ? 'kiosk' : r.organization_id ? 'organization' : 'platform',
           organizationId: r.organization_id,
@@ -641,11 +758,14 @@ class AdminController {
    * the old one from `effectiveFrom`, so quotes already given stay valid and
    * historical reporting keeps matching what customers actually paid.
    */
-  async createPriceList(req: Request, res: Response): Promise<void> {
+  async createPriceList(req: RequestWithBody<CreatePriceListBody>, res: Response): Promise<void> {
     const { organizationId, kioskId, bwPerPage, colorPerPage, minCharge, effectiveFrom } = req.body;
 
     if (kioskId) {
-      const kiosk = await db.query(`SELECT organization_id FROM kiosks WHERE id = $1`, [kioskId]);
+      const kiosk = await db.query<OrganizationIdRow>(
+        `SELECT organization_id FROM kiosks WHERE id = $1`,
+        [kioskId]
+      );
       if (kiosk.rows.length === 0) {
         throw new AppError('Kiosk not found', 404);
       }
@@ -654,7 +774,7 @@ class AdminController {
       }
     }
 
-    const result = await db.query(
+    const result = await db.query<PriceListIdRow>(
       `INSERT INTO price_lists (
          organization_id, kiosk_id, bw_per_page, color_per_page, min_charge,
          effective_from, created_by

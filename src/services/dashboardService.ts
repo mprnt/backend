@@ -30,6 +30,12 @@ const localDate = (column: string) => `((${column} AT TIME ZONE 'UTC') AT TIME Z
 export interface DashboardFilters {
   organizationId: string | null;
   kioskId?: string;
+  /**
+   * Narrow to one printer, by its printer_id (the string a Pi sends, not the
+   * UUID). Attribution comes from the print queue: the row that records which
+   * machine actually took the job.
+   */
+  printerId?: string;
   from?: string;
   to?: string;
   period?: ReportPeriod;
@@ -144,6 +150,8 @@ interface PrinterHealthRow {
   active_jobs: DatabaseNumber;
   paper_level: number | null;
   ink_black: number | null;
+  is_station: boolean;
+  station_name: string | null;
 }
 
 interface AttentionQueueRow {
@@ -238,6 +246,21 @@ export class DashboardService {
     if (filters.kioskId) {
       args.push(filters.kioskId);
       conditions.push(`k.id = $${args.length}`);
+    }
+    if (filters.printerId) {
+      args.push(filters.printerId);
+      // EXISTS rather than a join: a job can have more than one queue row
+      // after a retry, and joining would count its revenue twice.
+      //
+      // A paid job that never reached a printer belongs to no printer, so it
+      // is absent from every per-printer figure while still counting at the
+      // QR point and for the partner. That is the honest answer to "what did
+      // this machine earn", and the dashboard says so where it shows it.
+      conditions.push(
+        `EXISTS (SELECT 1 FROM print_queue pq
+                   JOIN printers pr ON pr.id = pq.printer_id
+                  WHERE pq.job_id = pj.id AND pr.printer_id = $${args.length})`
+      );
     }
     if (filters.from) {
       args.push(filters.from);
@@ -487,7 +510,7 @@ export class DashboardService {
     const scoped = organizationId !== null;
 
     const result = await this.database.query<PrinterHealthRow>(
-      `SELECT p.printer_id, p.name, p.status, p.last_heartbeat,
+      `SELECT p.printer_id, p.name, p.status, p.last_heartbeat, p.is_station, p.station_name,
               k.id AS kiosk_uuid, k.kiosk_id, k.name AS kiosk_name,
               o.id AS org_id, o.name AS org_name,
               p.supports_color, p.supports_double_sided,
@@ -527,6 +550,14 @@ export class DashboardService {
         enrolled: Boolean(r.api_key_prefix) && !r.revoked_at,
         revokedAt: r.revoked_at,
         lastSeenIp: r.last_seen_ip,
+      },
+      // A station is one printer in an MPrnt enclosure. Nothing downstream
+      // branches on this: it only changes what the dashboard calls the row.
+      station: {
+        isStation: r.is_station,
+        name: r.station_name,
+        /** What to call this unit on screen. */
+        label: r.is_station ? r.station_name || r.name : r.name,
       },
       lastHeartbeat: r.last_heartbeat,
       secondsSinceHeartbeat: r.seconds_since_heartbeat,

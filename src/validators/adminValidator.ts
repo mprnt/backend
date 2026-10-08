@@ -1,5 +1,6 @@
 import Joi from 'joi';
 import { ASSIGNABLE_ROLES, PERMISSIONS } from '../types/admin';
+import { BUSINESS_MODEL_IDS } from '../types/businessModels';
 
 const uuid = Joi.string().uuid();
 
@@ -29,7 +30,7 @@ export const changePasswordSchema = Joi.object({
   newPassword: Joi.string().min(12).max(200).required().messages({
     'string.min': 'New password must be at least 12 characters',
   }),
-}).custom((value, helpers) => {
+}).custom((value: { currentPassword: string; newPassword: string }, helpers) => {
   if (value.currentPassword === value.newPassword) {
     return helpers.error('any.invalid', {
       message: 'New password must differ from the current one',
@@ -40,6 +41,11 @@ export const changePasswordSchema = Joi.object({
 
 export const createOrganizationSchema = Joi.object({
   name: Joi.string().min(2).max(255).required(),
+  // Optional: a partner can be created before the commercial terms are signed.
+  businessModel: Joi.string()
+    .valid(...BUSINESS_MODEL_IDS)
+    .optional()
+    .allow(null, ''),
   timezone: Joi.string().max(64).default('Asia/Kolkata'),
   contactEmail: email().optional().allow(null, ''),
   contactPhone: Joi.string().max(32).optional().allow(null, ''),
@@ -48,11 +54,29 @@ export const createOrganizationSchema = Joi.object({
 
 export const updateOrganizationSchema = Joi.object({
   name: Joi.string().min(2).max(255).optional(),
+  businessModel: Joi.string()
+    .valid(...BUSINESS_MODEL_IDS)
+    .optional()
+    .allow(null, ''),
   timezone: Joi.string().max(64).optional(),
   contactEmail: email().optional().allow(null, ''),
   contactPhone: Joi.string().max(32).optional().allow(null, ''),
   notes: Joi.string().max(2000).optional().allow(null, ''),
 }).min(1);
+
+/**
+ * Query for GET /organizations. An unknown model id is rejected rather than
+ * quietly returning an empty list, which would read as "no partners on that
+ * model" when it was really a typo.
+ */
+export const listOrganizationsQuerySchema = Joi.object({
+  status: Joi.string().valid('active', 'suspended').optional(),
+  search: Joi.string().max(255).optional().allow(''),
+  businessModel: Joi.string()
+    .valid(...BUSINESS_MODEL_IDS, 'none')
+    .optional()
+    .allow(''),
+});
 
 export const organizationStatusSchema = Joi.object({
   status: Joi.string().valid('active', 'suspended').required(),
@@ -100,9 +124,17 @@ export const createPriceListSchema = Joi.object({
   // A kiosk-scoped price needs its organization so resolution is unambiguous.
   .with('kioskId', 'organizationId');
 
+const printerIdentifier = Joi.string()
+  .pattern(/^[A-Za-z0-9_-]{3,64}$/)
+  .messages({
+    'string.pattern.base':
+      'Printer ID must be 3–64 letters, digits, underscores or hyphens (e.g. RPI_M002_01)',
+  });
+
 export const reportQuerySchema = Joi.object({
   organizationId: uuid.optional(),
   kioskId: uuid.optional(),
+  printerId: printerIdentifier.optional(),
   period: Joi.string().valid('day', 'week', 'month', 'year').default('month'),
   from: Joi.string().isoDate().optional(),
   to: Joi.string().isoDate().optional(),
@@ -129,13 +161,6 @@ const kioskCode = Joi.string()
   .pattern(/^[A-Za-z0-9-]{2,10}$/)
   .messages({
     'string.pattern.base': 'Kiosk code must be 2–10 letters, digits or hyphens (e.g. M002)',
-  });
-
-const printerIdentifier = Joi.string()
-  .pattern(/^[A-Za-z0-9_-]{3,64}$/)
-  .messages({
-    'string.pattern.base':
-      'Printer ID must be 3–64 letters, digits, underscores or hyphens (e.g. RPI_M002_01)',
   });
 
 const printerCapabilities = Joi.object({
@@ -170,7 +195,17 @@ export const adminEnrollPrinterSchema = Joi.object({
   kioskId: uuid.required(),
   name: Joi.string().min(1).max(255).required(),
   capabilities: printerCapabilities.required(),
+  // A station is one printer in an MPrnt enclosure, so it is a flag on the
+  // printer rather than an object of its own.
+  isStation: Joi.boolean().default(false),
+  stationName: Joi.string().max(100).optional().allow(null, ''),
 });
+
+export const updatePrinterSchema = Joi.object({
+  name: Joi.string().min(1).max(255).optional(),
+  isStation: Joi.boolean().optional(),
+  stationName: Joi.string().max(100).optional().allow(null, ''),
+}).min(1);
 
 export const printerParamSchema = Joi.object({
   printerId: printerIdentifier.required(),

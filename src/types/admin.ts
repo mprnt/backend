@@ -2,6 +2,8 @@
  * Admin dashboard domain types and the permission model.
  */
 
+import { BusinessModelId } from './businessModels';
+
 export type AdminRole = 'super_admin' | 'owner' | 'manager' | 'viewer';
 
 export type OrganizationStatus = 'active' | 'suspended';
@@ -129,6 +131,8 @@ export interface Organization {
   name: string;
   slug: string;
   status: OrganizationStatus;
+  /** Commercial model, or null for partners signed up before it was recorded. */
+  businessModel: BusinessModelId | null;
   timezone: string;
   contactEmail: string | null;
   contactPhone: string | null;
