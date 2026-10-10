@@ -22,6 +22,49 @@ interface CountRow extends QueryResultRow {
   count: string;
 }
 
+/**
+ * What a shop may know about itself.
+ *
+ * Deliberately a separate, explicit shape rather than the Organization type:
+ * that one is the platform's view of a partner (slug, commercial model, notes),
+ * none of which belongs on a shop's own dashboard.
+ */
+export interface ShopProfile {
+  name: string;
+  status: OrganizationStatus;
+  timezone: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  /** When the shop joined, as UTC ISO text (formatted in SQL, host-tz independent). */
+  memberSince: string;
+  fleet: { qrPoints: number; printers: number; stations: number };
+  /** Everything since joining. Revenue is paid jobs, as on the other reports. */
+  lifetime: {
+    revenue: number;
+    paidJobs: number;
+    completedJobs: number;
+    pagesPrinted: number;
+    firstSaleAt: string | null;
+  };
+}
+
+interface ShopProfileRow extends QueryResultRow {
+  name: string;
+  status: OrganizationStatus;
+  timezone: string;
+  contact_email: string | null;
+  contact_phone: string | null;
+  member_since: string;
+  qr_points: string;
+  printers: string;
+  stations: string;
+  revenue: string;
+  paid_jobs: string;
+  completed_jobs: string;
+  pages_printed: string;
+  first_sale_at: string | null;
+}
+
 interface KioskListRow extends QueryResultRow {
   id: string;
   kiosk_id: string;
@@ -143,6 +186,66 @@ export class OrganizationService {
     );
 
     return result.rows.map((r) => this.map(r));
+  }
+
+  /**
+   * The signed-in shop's own profile and lifetime figures.
+   *
+   * Takes the organization id from the authenticated principal and from
+   * nowhere else: there is no parameter, query string or body field that can
+   * point it at a different shop. Every subquery below is bound to that one id.
+   */
+  async getOwnProfile(organizationId: string): Promise<ShopProfile> {
+    const result = await this.database.query<ShopProfileRow>(
+      `SELECT o.name, o.status, o.timezone, o.contact_email, o.contact_phone,
+              to_char(o.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS member_since,
+              (SELECT COUNT(*) FROM kiosks k WHERE k.organization_id = o.id) AS qr_points,
+              (SELECT COUNT(*) FROM printers p JOIN kiosks k ON k.id = p.kiosk_id
+                WHERE k.organization_id = o.id AND p.revoked_at IS NULL) AS printers,
+              (SELECT COUNT(*) FROM printers p JOIN kiosks k ON k.id = p.kiosk_id
+                WHERE k.organization_id = o.id AND p.revoked_at IS NULL AND p.is_station) AS stations,
+              COALESCE(j.revenue, 0)        AS revenue,
+              COALESCE(j.paid_jobs, 0)      AS paid_jobs,
+              COALESCE(j.completed_jobs, 0) AS completed_jobs,
+              COALESCE(j.pages_printed, 0)  AS pages_printed,
+              to_char(j.first_sale, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS first_sale_at
+         FROM organizations o
+         LEFT JOIN LATERAL (
+           SELECT SUM(pj.total_amount) FILTER (WHERE pj.payment_status = 'paid') AS revenue,
+                  COUNT(*)             FILTER (WHERE pj.payment_status = 'paid') AS paid_jobs,
+                  COUNT(*)             FILTER (WHERE pj.status = 'completed')    AS completed_jobs,
+                  SUM(pj.printed_pages)                                          AS pages_printed,
+                  MIN(pj.created_at)   FILTER (WHERE pj.payment_status = 'paid') AS first_sale
+             FROM print_jobs pj
+            WHERE pj.organization_id = o.id
+         ) j ON true
+        WHERE o.id = $1 AND o.deleted_at IS NULL`,
+      [organizationId]
+    );
+
+    const r = result.rows[0];
+    if (!r) throw new AppError('Shop not found', 404);
+
+    return {
+      name: r.name,
+      status: r.status,
+      timezone: r.timezone,
+      contactEmail: r.contact_email,
+      contactPhone: r.contact_phone,
+      memberSince: r.member_since,
+      fleet: {
+        qrPoints: parseInt(r.qr_points) || 0,
+        printers: parseInt(r.printers) || 0,
+        stations: parseInt(r.stations) || 0,
+      },
+      lifetime: {
+        revenue: Math.round((Number(r.revenue) || 0) * 100) / 100,
+        paidJobs: parseInt(r.paid_jobs) || 0,
+        completedJobs: parseInt(r.completed_jobs) || 0,
+        pagesPrinted: parseInt(r.pages_printed) || 0,
+        firstSaleAt: r.first_sale_at,
+      },
+    };
   }
 
   async getById(id: string): Promise<Organization> {

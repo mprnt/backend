@@ -155,6 +155,23 @@ class AdminController {
     });
   }
 
+  /**
+   * The caller's own shop: profile, when they joined, lifetime figures.
+   *
+   * Reads nothing from the request. The shop is the caller's own organization
+   * and cannot be varied, which is what makes this endpoint safe to expose to
+   * shop staff. A super admin has no shop, so there is nothing to return.
+   */
+  async getShop(req: Request, res: Response): Promise<void> {
+    const organizationId = req.admin!.organizationId;
+    if (!organizationId) {
+      throw new AppError('This account is not attached to a shop', 404);
+    }
+
+    const shop = await organizationService.getOwnProfile(organizationId);
+    res.json({ status: 'success', data: shop });
+  }
+
   async changePassword(req: RequestWithBody<ChangePasswordBody>, res: Response): Promise<void> {
     const { currentPassword, newPassword } = req.body;
 

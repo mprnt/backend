@@ -212,6 +212,13 @@ router.put(
 router.get('/permissions', h(c.listPermissionCatalogue.bind(c)));
 
 // ---------------------------------------------------------------------------
+// The caller's own shop. No resolveTenant on purpose: that middleware accepts a
+// super admin's organizationId from the request, and this endpoint accepts
+// nothing from the request at all - the shop is the principal's own.
+// ---------------------------------------------------------------------------
+router.get('/shop', requirePermission(PERMISSIONS.REPORTS_READ), h(c.getShop.bind(c)));
+
+// ---------------------------------------------------------------------------
 // Reports — the shop dashboard
 // ---------------------------------------------------------------------------
 router.get(
@@ -354,8 +361,14 @@ router.get(
   requirePermission(PERMISSIONS.PRICING_READ),
   h(c.listPriceLists.bind(c))
 );
+// requireSuperAdmin as well as the permission: createPriceList takes its
+// organizationId from the request body and does not check it against the
+// caller, so anyone who held pricing:write could publish rates for any shop -
+// or, with a null organizationId, for the whole platform. No shop role carries
+// the permission today; this keeps that true if a role or override ever changes.
 router.post(
   '/pricing/lists',
+  requireSuperAdmin,
   requirePermission(PERMISSIONS.PRICING_WRITE),
   validate(createPriceListSchema),
   h(c.createPriceList.bind(c))
