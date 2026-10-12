@@ -13,6 +13,7 @@ import {
 import { asyncHandler } from '../utils/asyncHandler';
 import { leadController } from '../controllers/leadController';
 import { refundController } from '../controllers/refundController';
+import { revenueSplitController } from '../controllers/revenueSplitController';
 import {
   listLeadsSchema,
   refundJobBodySchema,
@@ -42,6 +43,7 @@ import {
   printerParamSchema,
   periodQuerySchema,
   auditQuerySchema,
+  setRevenueSplitSchema,
 } from '../validators/adminValidator';
 
 const router = Router();
@@ -372,6 +374,33 @@ router.post(
   requirePermission(PERMISSIONS.PRICING_WRITE),
   validate(createPriceListSchema),
   h(c.createPriceList.bind(c))
+);
+
+// ---------------------------------------------------------------------------
+// Revenue split (Model 2 · Option A) — read by the partner, written only by the
+// platform. As with pricing, requireSuperAdmin sits beside the permission: the
+// write takes organizationId from the body, so the permission alone would not
+// stop a shop that was ever granted it from setting its own split.
+// ---------------------------------------------------------------------------
+router.get(
+  '/revenue-split',
+  resolveTenant,
+  requirePermission(PERMISSIONS.SPLIT_READ),
+  h(revenueSplitController.getSplit.bind(revenueSplitController))
+);
+router.get(
+  '/revenue-split/summary',
+  resolveTenant,
+  requirePermission(PERMISSIONS.SPLIT_READ),
+  validate(periodQuerySchema, 'query'),
+  h(revenueSplitController.getSplitSummary.bind(revenueSplitController))
+);
+router.post(
+  '/revenue-split',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.SPLIT_WRITE),
+  validate(setRevenueSplitSchema),
+  h(revenueSplitController.setSplit.bind(revenueSplitController))
 );
 
 // ---------------------------------------------------------------------------

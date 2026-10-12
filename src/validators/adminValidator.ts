@@ -225,3 +225,18 @@ export const auditQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(200).default(50),
   offset: Joi.number().integer().min(0).default(0),
 });
+
+/**
+ * A revenue-split term. The share is a percentage to two places, and MPrnt's
+ * share is derived from it, so only one number is ever stored or sent.
+ *
+ * The note is required: a commercial term needs a recorded reason, and the
+ * history shows it to the partner.
+ */
+export const setRevenueSplitSchema = Joi.object({
+  organizationId: uuid.required(),
+  kioskId: uuid.optional().allow(null),
+  partnerSharePct: Joi.number().min(0).max(100).precision(2).required(),
+  effectiveFrom: Joi.string().isoDate().optional(),
+  note: Joi.string().trim().min(3).max(500).required(),
+});

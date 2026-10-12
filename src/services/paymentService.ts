@@ -15,6 +15,7 @@ import logger from '../utils/logger';
 import { RazorpayService } from './razorpayService';
 import { websocketService } from './websocketService';
 import { queueService } from './queueService';
+import { revenueSplitService } from './revenueSplitService';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -526,6 +527,8 @@ export class PaymentService {
           order.job_id,
         ]
       );
+      // Split at capture, like every paid sale. The money was received even though the job will not print.
+      await revenueSplitService.snapshotPaidJob(client, order.job_id);
       logger.error('Payment amount does not match job total; job not queued', {
         orderId: args.orderId,
         jobId: order.job_id,
@@ -543,6 +546,7 @@ export class PaymentService {
          WHERE id = $2`,
         ['Paid after the document was deleted (session expired); refund required', order.job_id]
       );
+      await revenueSplitService.snapshotPaidJob(client, order.job_id);
       logger.error('Payment for a job whose document was deleted; job not queued', {
         orderId: args.orderId,
         jobId: order.job_id,
@@ -554,6 +558,7 @@ export class PaymentService {
          WHERE id = $3`,
         ['paid', 'queued', order.job_id]
       );
+      await revenueSplitService.snapshotPaidJob(client, order.job_id);
 
       // Put the job into the print queue inside the same transaction.
       // Without this row no printer can ever see the job, so payment and

@@ -17,6 +17,8 @@ export const PERMISSIONS = {
   ORGS_READ: 'orgs:read',
   ORGS_WRITE: 'orgs:write',
   PRICING_WRITE: 'pricing:write',
+  // Who keeps what on a revenue-share station. Written by the platform only.
+  SPLIT_WRITE: 'split:write',
   PLATFORM_REPORTS: 'platform:reports',
   AUDIT_READ_ALL: 'audit:read_all',
 
@@ -24,6 +26,8 @@ export const PERMISSIONS = {
   REPORTS_READ: 'reports:read',
   SESSIONS_READ: 'sessions:read',
   PRICING_READ: 'pricing:read',
+  // A shop reads its own split and its share of revenue; it never writes one.
+  SPLIT_READ: 'split:read',
   PRINTERS_READ: 'printers:read',
   PRINTERS_MANAGE: 'printers:manage',
   JOBS_CANCEL: 'jobs:cancel',
@@ -40,6 +44,7 @@ const SHOP_VIEWER: Permission[] = [
   PERMISSIONS.REPORTS_READ,
   PERMISSIONS.SESSIONS_READ,
   PERMISSIONS.PRICING_READ,
+  PERMISSIONS.SPLIT_READ,
   PERMISSIONS.PRINTERS_READ,
 ];
 
@@ -71,6 +76,7 @@ export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     PERMISSIONS.ORGS_READ,
     PERMISSIONS.ORGS_WRITE,
     PERMISSIONS.PRICING_WRITE,
+    PERMISSIONS.SPLIT_WRITE,
     PERMISSIONS.PLATFORM_REPORTS,
     PERMISSIONS.AUDIT_READ_ALL,
   ],

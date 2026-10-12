@@ -3,7 +3,6 @@ import {
   ROLE_PERMISSIONS,
   ASSIGNABLE_ROLES,
   PERMISSIONS,
-  AdminRole,
 } from '../../src/types/admin';
 
 describe('Admin permission model', () => {
@@ -22,6 +21,7 @@ describe('Admin permission model', () => {
         PERMISSIONS.ORGS_READ,
         PERMISSIONS.ORGS_WRITE,
         PERMISSIONS.PRICING_WRITE,
+        PERMISSIONS.SPLIT_WRITE,
         PERMISSIONS.PLATFORM_REPORTS,
         PERMISSIONS.AUDIT_READ_ALL,
       ];
@@ -57,6 +57,7 @@ describe('Admin permission model', () => {
         PERMISSIONS.JOBS_CANCEL,
         PERMISSIONS.REFUNDS_ISSUE,
         PERMISSIONS.PRICING_WRITE,
+        PERMISSIONS.SPLIT_WRITE,
         PERMISSIONS.ORGS_WRITE,
       ];
       for (const p of writes) {
@@ -65,7 +66,7 @@ describe('Admin permission model', () => {
     });
 
     it('excludes super_admin from the roles assignable over HTTP', () => {
-      expect(ASSIGNABLE_ROLES).not.toContain('super_admin' as AdminRole);
+      expect(ASSIGNABLE_ROLES.map(String)).not.toContain('super_admin');
     });
   });
 
