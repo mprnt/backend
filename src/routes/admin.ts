@@ -15,6 +15,15 @@ import { leadController } from '../controllers/leadController';
 import { refundController } from '../controllers/refundController';
 import { revenueSplitController } from '../controllers/revenueSplitController';
 import { billingController } from '../controllers/billingController';
+import { onboardingController } from '../controllers/onboardingController';
+import { uploadDocument } from '../middleware/uploadDocument';
+import {
+  draftParamSchema,
+  draftDocumentParamSchema,
+  draftPatchSchema,
+  documentKindSchema,
+  partnerDocumentParamSchema,
+} from '../validators/onboardingValidator';
 import {
   listLeadsSchema,
   refundJobBodySchema,
@@ -457,6 +466,69 @@ router.post(
   validate(chargeParamSchema, 'params'),
   validate(settleChargeSchema),
   h(billingController.settleCharge.bind(billingController))
+);
+
+// ---------------------------------------------------------------------------
+// Partner onboarding. The whole wizard is platform-only: a shop cannot create
+// itself, and a partner's documents are read only by a super admin.
+// ---------------------------------------------------------------------------
+router.post(
+  '/onboarding/drafts',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_WRITE),
+  h(onboardingController.createDraft.bind(onboardingController))
+);
+router.get(
+  '/onboarding/drafts/:draftId',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_READ),
+  validate(draftParamSchema, 'params'),
+  h(onboardingController.getDraft.bind(onboardingController))
+);
+router.put(
+  '/onboarding/drafts/:draftId',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_WRITE),
+  validate(draftParamSchema, 'params'),
+  validate(draftPatchSchema),
+  h(onboardingController.patchDraft.bind(onboardingController))
+);
+router.post(
+  '/onboarding/drafts/:draftId/documents',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_WRITE),
+  validate(draftParamSchema, 'params'),
+  uploadDocument,
+  validate(documentKindSchema),
+  h(onboardingController.addDocument.bind(onboardingController))
+);
+router.delete(
+  '/onboarding/drafts/:draftId/documents/:docId',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_WRITE),
+  validate(draftDocumentParamSchema, 'params'),
+  h(onboardingController.removeDocument.bind(onboardingController))
+);
+router.post(
+  '/onboarding/drafts/:draftId/complete',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_WRITE),
+  validate(draftParamSchema, 'params'),
+  h(onboardingController.complete.bind(onboardingController))
+);
+router.get(
+  '/organizations/:id/documents',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_READ),
+  validate(idParamSchema, 'params'),
+  h(onboardingController.listPartnerDocuments.bind(onboardingController))
+);
+router.get(
+  '/organizations/:id/documents/:docId/download',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_READ),
+  validate(partnerDocumentParamSchema, 'params'),
+  h(onboardingController.downloadPartnerDocument.bind(onboardingController))
 );
 
 // ---------------------------------------------------------------------------

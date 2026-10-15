@@ -1,6 +1,6 @@
-import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { Database, db } from '../config/database';
+import { generateTemporaryPassword } from '../utils/temporaryPassword';
+import { Database, QueryResultRow, db } from '../config/database';
 import env from '../config/environment';
 import { AppError } from '../utils/errors';
 import {
@@ -20,10 +20,30 @@ export interface CreatedAdmin {
   temporaryPassword: string;
 }
 
+interface AdminUserRow extends QueryResultRow {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: AdminRole;
+  organization_id: string | null;
+  organization_name?: string | null;
+  is_active: boolean;
+  must_change_password: boolean;
+  last_login_at: Date | null;
+  created_at: Date;
+  deleted_at: Date | null;
+}
+
+interface AdminPermissionOverrideRow extends QueryResultRow {
+  permission: string;
+  effect: 'grant' | 'deny';
+  created_at: Date;
+}
+
 export class AdminUserService {
   constructor(private database: Database = db) {}
 
-  private map(row: any): AdminUser {
+  private map(row: AdminUserRow): AdminUser {
     return {
       id: row.id,
       email: row.email,
@@ -46,11 +66,7 @@ export class AdminUserService {
    * because these get handed over verbally more often than anyone admits.
    */
   private generatePassword(): string {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-    const bytes = crypto.randomBytes(16);
-    let out = '';
-    for (const b of bytes) out += alphabet[b % alphabet.length];
-    return `${out.slice(0, 4)}-${out.slice(4, 8)}-${out.slice(8, 12)}-${out.slice(12, 16)}`;
+    return generateTemporaryPassword();
   }
 
   /**
@@ -90,7 +106,7 @@ export class AdminUserService {
     const temporaryPassword = this.generatePassword();
     const hash = await bcrypt.hash(temporaryPassword, env.security.bcrypt_rounds);
 
-    const result = await this.database.query(
+    const result = await this.database.query<AdminUserRow>(
       `INSERT INTO admin_users (
          email, password_hash, full_name, role, organization_id,
          is_active, must_change_password, created_by, created_at, updated_at
@@ -133,7 +149,7 @@ export class AdminUserService {
       conditions.push(`au.organization_id = $${args.length}`);
     }
 
-    const result = await this.database.query(
+    const result = await this.database.query<AdminUserRow>(
       `SELECT au.*, o.name AS organization_name
          FROM admin_users au
          LEFT JOIN organizations o ON o.id = au.organization_id
@@ -155,7 +171,7 @@ export class AdminUserService {
       scope = `AND au.organization_id = $2`;
     }
 
-    const result = await this.database.query(
+    const result = await this.database.query<AdminUserRow>(
       `SELECT au.*, o.name AS organization_name
          FROM admin_users au
          LEFT JOIN organizations o ON o.id = au.organization_id
@@ -203,7 +219,7 @@ export class AdminUserService {
 
     sets.push('updated_at = NOW()');
 
-    const result = await this.database.query(
+    const result = await this.database.query<AdminUserRow>(
       `UPDATE admin_users SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
       args
     );
@@ -289,7 +305,7 @@ export class AdminUserService {
   ): Promise<{ role: AdminRole; effective: Permission[]; overrides: unknown[] }> {
     const user = await this.getById(id, organizationId);
 
-    const overrides = await this.database.query(
+    const overrides = await this.database.query<AdminPermissionOverrideRow>(
       `SELECT permission, effect, created_at FROM admin_permission_overrides
         WHERE admin_user_id = $1 ORDER BY permission`,
       [id]
@@ -297,7 +313,7 @@ export class AdminUserService {
 
     return {
       role: user.role,
-      effective: resolvePermissions(user.role, overrides.rows as any),
+      effective: resolvePermissions(user.role, overrides.rows),
       overrides: overrides.rows,
     };
   }

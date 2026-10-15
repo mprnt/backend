@@ -9,6 +9,7 @@ export const LOCKS = {
   SESSION_EXPIRY: 7001,
   DOCUMENT_SWEEP: 7002,
   BILLING_CHARGES: 7003,
+  ONBOARDING_SWEEP: 7004,
 } as const;
 
 /**

@@ -7,6 +7,7 @@ import { schedulePrinterReaper, stopPrinterReaper } from './jobs/printerReaperJo
 import { scheduleDailyStatsRollup, stopDailyStatsRollup } from './jobs/dailyStatsRollupJob';
 import { scheduleDocumentSweep, stopDocumentSweep, documentsInFlight } from './jobs/documentJobs';
 import { scheduleBillingJob, stopBillingJob } from './jobs/billingJob';
+import { scheduleOnboardingSweep, stopOnboardingSweep } from './jobs/onboardingJob';
 import { websocketService } from './services/websocketService';
 
 const PORT = env.port;
@@ -28,6 +29,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   schedulePrinterReaper();
   scheduleDailyStatsRollup();
   scheduleBillingJob();
+  scheduleOnboardingSweep();
   logger.info('⏰ Background jobs started');
 });
 
@@ -58,6 +60,7 @@ const gracefulShutdown = async (signal: string) => {
   stopPrinterReaper();
   stopDailyStatsRollup();
   stopBillingJob();
+  stopOnboardingSweep();
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   logger.info('HTTP server closed');

@@ -6,12 +6,15 @@ export class AppError extends Error {
   isOperational: boolean;
   /** Stable machine-readable reason, sent to the client when set. */
   code?: string;
+  /** Optional structured detail sent with the error, such as a list of fields to fix. */
+  details?: unknown;
 
-  constructor(message: string, statusCode: number, code?: string) {
+  constructor(message: string, statusCode: number, code?: string, details?: unknown) {
     super(message);
     this.statusCode = statusCode;
     this.isOperational = true;
     this.code = code;
+    this.details = details;
 
     Error.captureStackTrace(this, this.constructor);
   }
@@ -35,6 +38,7 @@ export const errorHandler = (
       status: 'error',
       ...(err.code ? { code: err.code } : {}),
       message: err.message,
+      ...(err.details !== undefined ? { details: err.details } : {}),
     });
   }
 
