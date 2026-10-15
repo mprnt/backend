@@ -8,6 +8,7 @@ import logger from './logger';
 export const LOCKS = {
   SESSION_EXPIRY: 7001,
   DOCUMENT_SWEEP: 7002,
+  BILLING_CHARGES: 7003,
 } as const;
 
 /**
@@ -40,7 +41,7 @@ export async function withAdvisoryLock<T>(key: number, fn: () => Promise<T>): Pr
     try {
       return await fn();
     } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [key]).catch((error) => {
+      await client.query('SELECT pg_advisory_unlock($1)', [key]).catch((error: unknown) => {
         logger.error('Failed to release advisory lock', { key, error });
       });
     }

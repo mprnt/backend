@@ -14,6 +14,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { leadController } from '../controllers/leadController';
 import { refundController } from '../controllers/refundController';
 import { revenueSplitController } from '../controllers/revenueSplitController';
+import { billingController } from '../controllers/billingController';
 import {
   listLeadsSchema,
   refundJobBodySchema,
@@ -44,6 +45,11 @@ import {
   periodQuerySchema,
   auditQuerySchema,
   setRevenueSplitSchema,
+  setBillingPlanSchema,
+  recordBillingSaleSchema,
+  markBillingLiveSchema,
+  settleChargeSchema,
+  chargeParamSchema,
 } from '../validators/adminValidator';
 
 const router = Router();
@@ -401,6 +407,56 @@ router.post(
   requirePermission(PERMISSIONS.SPLIT_WRITE),
   validate(setRevenueSplitSchema),
   h(revenueSplitController.setSplit.bind(revenueSplitController))
+);
+
+// ---------------------------------------------------------------------------
+// Model 1 billing (hardware sale and monthly software). The partner reads its
+// own contract; every write is a super-admin action, audited in the controller.
+// ---------------------------------------------------------------------------
+router.get(
+  '/billing/contract',
+  resolveTenant,
+  requirePermission(PERMISSIONS.BILLING_READ),
+  h(billingController.getContract.bind(billingController))
+);
+router.get(
+  '/billing/plans',
+  requireSuperAdmin,
+  h(billingController.listPlans.bind(billingController))
+);
+router.post(
+  '/billing/plans',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.BILLING_WRITE),
+  validate(setBillingPlanSchema),
+  h(billingController.setPlan.bind(billingController))
+);
+router.get(
+  '/billing/contracts',
+  requireSuperAdmin,
+  h(billingController.listContracts.bind(billingController))
+);
+router.post(
+  '/billing/contract',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.BILLING_WRITE),
+  validate(recordBillingSaleSchema),
+  h(billingController.recordSale.bind(billingController))
+);
+router.post(
+  '/billing/contract/go-live',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.BILLING_WRITE),
+  validate(markBillingLiveSchema),
+  h(billingController.markLive.bind(billingController))
+);
+router.post(
+  '/billing/charges/:chargeId/settle',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.BILLING_WRITE),
+  validate(chargeParamSchema, 'params'),
+  validate(settleChargeSchema),
+  h(billingController.settleCharge.bind(billingController))
 );
 
 // ---------------------------------------------------------------------------

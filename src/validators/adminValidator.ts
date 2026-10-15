@@ -240,3 +240,54 @@ export const setRevenueSplitSchema = Joi.object({
   effectiveFrom: Joi.string().isoDate().optional(),
   note: Joi.string().trim().min(3).max(500).required(),
 });
+
+// ---------------------------------------------------------------------------
+// Model 1 billing. Amounts are GST-inclusive by definition, and the flag is not
+// accepted from the client: an unknown key is stripped, so it cannot change it.
+// ---------------------------------------------------------------------------
+
+const calendarDate = Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
+const money2dp = (min: number, max: number) => Joi.number().min(min).max(max).precision(2);
+
+export const setBillingPlanSchema = Joi.object({
+  hardwarePrice: money2dp(0.01, 1000000).required(),
+  monthlyPrice: money2dp(0, 100000).required(),
+  freeMonths: Joi.number().integer().min(0).max(12).required(),
+  graceDays: Joi.number().integer().min(0).max(60).required(),
+  effectiveFrom: Joi.string().isoDate().optional(),
+  note: Joi.string().trim().min(3).max(500).required(),
+});
+
+export const recordBillingSaleSchema = Joi.object({
+  organizationId: uuid.required(),
+  note: Joi.string().trim().min(3).max(500).required(),
+});
+
+export const markBillingLiveSchema = Joi.object({
+  organizationId: uuid.required(),
+  goLiveOn: calendarDate.required(),
+  note: Joi.string().trim().min(3).max(500).required(),
+});
+
+export const settleChargeSchema = Joi.object({
+  action: Joi.string().valid('paid', 'waive').required(),
+  method: Joi.when('action', {
+    is: 'paid',
+    then: Joi.string().valid('bank_transfer', 'upi', 'cash', 'cheque', 'other').required(),
+    otherwise: Joi.forbidden(),
+  }),
+  reference: Joi.when('action', {
+    is: 'paid',
+    then: Joi.string().trim().max(120).allow('', null).optional(),
+    otherwise: Joi.forbidden(),
+  }),
+  note: Joi.when('action', {
+    is: 'waive',
+    then: Joi.string().trim().min(3).max(500).required(),
+    otherwise: Joi.string().trim().max(500).allow('', null).optional(),
+  }),
+});
+
+export const chargeParamSchema = Joi.object({
+  chargeId: uuid.required(),
+});

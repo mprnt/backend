@@ -19,6 +19,8 @@ export const PERMISSIONS = {
   PRICING_WRITE: 'pricing:write',
   // Who keeps what on a revenue-share station. Written by the platform only.
   SPLIT_WRITE: 'split:write',
+  // Model 1 billing. Written by the platform only.
+  BILLING_WRITE: 'billing:write',
   PLATFORM_REPORTS: 'platform:reports',
   AUDIT_READ_ALL: 'audit:read_all',
 
@@ -28,6 +30,8 @@ export const PERMISSIONS = {
   PRICING_READ: 'pricing:read',
   // A shop reads its own split and its share of revenue; it never writes one.
   SPLIT_READ: 'split:read',
+  // A shop reads its own hardware and subscription invoices; it never writes them.
+  BILLING_READ: 'billing:read',
   PRINTERS_READ: 'printers:read',
   PRINTERS_MANAGE: 'printers:manage',
   JOBS_CANCEL: 'jobs:cancel',
@@ -54,6 +58,7 @@ const SHOP_MANAGER: Permission[] = [
   PERMISSIONS.JOBS_CANCEL,
   PERMISSIONS.STAFF_READ,
   PERMISSIONS.EXPORT_DATA,
+  PERMISSIONS.BILLING_READ,
 ];
 
 const SHOP_OWNER: Permission[] = [
@@ -77,6 +82,7 @@ export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     PERMISSIONS.ORGS_WRITE,
     PERMISSIONS.PRICING_WRITE,
     PERMISSIONS.SPLIT_WRITE,
+    PERMISSIONS.BILLING_WRITE,
     PERMISSIONS.PLATFORM_REPORTS,
     PERMISSIONS.AUDIT_READ_ALL,
   ],
