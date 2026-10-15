@@ -22,6 +22,7 @@ describe('Admin permission model', () => {
         PERMISSIONS.ORGS_WRITE,
         PERMISSIONS.PRICING_WRITE,
         PERMISSIONS.SPLIT_WRITE,
+        PERMISSIONS.BILLING_WRITE,
         PERMISSIONS.PLATFORM_REPORTS,
         PERMISSIONS.AUDIT_READ_ALL,
       ];
@@ -50,6 +51,12 @@ describe('Admin permission model', () => {
       expect(ROLE_PERMISSIONS.viewer).not.toContain(PERMISSIONS.STAFF_WRITE);
     });
 
+    it('lets a shop owner and manager read their own billing, and a viewer not at all', () => {
+      expect(ROLE_PERMISSIONS.owner).toContain(PERMISSIONS.BILLING_READ);
+      expect(ROLE_PERMISSIONS.manager).toContain(PERMISSIONS.BILLING_READ);
+      expect(ROLE_PERMISSIONS.viewer).not.toContain(PERMISSIONS.BILLING_READ);
+    });
+
     it('keeps a viewer read-only', () => {
       const writes = [
         PERMISSIONS.STAFF_WRITE,
@@ -58,6 +65,7 @@ describe('Admin permission model', () => {
         PERMISSIONS.REFUNDS_ISSUE,
         PERMISSIONS.PRICING_WRITE,
         PERMISSIONS.SPLIT_WRITE,
+        PERMISSIONS.BILLING_WRITE,
         PERMISSIONS.ORGS_WRITE,
       ];
       for (const p of writes) {
