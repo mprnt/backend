@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { Database, db } from '../config/database';
 import { AppError } from '../utils/errors';
 import {
@@ -132,7 +132,7 @@ export class PrintJobService {
       );
 
       // 5. Create print job
-      const jobId = uuidv4();
+      const jobId = randomUUID();
       const insertResult = await client.query<PrintJobRow>(
         `INSERT INTO print_jobs (
           id,

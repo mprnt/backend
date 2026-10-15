@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { Database, db } from '../config/database';
+import { Database, PoolClient, QueryResultRow, db } from '../config/database';
 import { AdminPrincipal, PERMISSIONS } from '../types/admin';
 import logger from '../utils/logger';
 
@@ -50,6 +50,22 @@ export interface AuditListParams {
   offset?: number;
 }
 
+interface AuditListRow extends QueryResultRow {
+  id: number | string;
+  action: string;
+  actor_scope: ActorScope;
+  resource_type: string | null;
+  resource_id: string | null;
+  details: Record<string, unknown> | null;
+  ip_address: string | null;
+  created_at: Date;
+  organization_id: string | null;
+  actor_email: string | null;
+  actor_name: string | null;
+  actor_role: string | null;
+  organization_name: string | null;
+}
+
 /**
  * Append-only record of every administrative action.
  *
@@ -69,25 +85,36 @@ export interface AuditListParams {
 export class AuditService {
   constructor(private database: Database = db) {}
 
-  async record(entry: AuditEntry): Promise<void> {
-    try {
-      await this.database.query(
-        `INSERT INTO audit_logs (
+  /**
+   * Writes one audit row. Given a transaction client, the row is written inside
+   * that transaction and a failure throws, so the change it records is rolled
+   * back with it. Without one, a failure is logged and the caller carries on.
+   * Money changes always pass their transaction client.
+   */
+  async record(entry: AuditEntry, client?: Pick<PoolClient, 'query'>): Promise<void> {
+    const sql = `INSERT INTO audit_logs (
            admin_user_id, actor_scope, organization_id, action, resource_type, resource_id,
            ip_address, user_agent, details, created_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7::inet, $8, $9, NOW())`,
-        [
-          entry.actorId,
-          entry.actorScope,
-          entry.organizationId ?? null,
-          entry.action,
-          entry.resourceType ?? null,
-          entry.resourceId ?? null,
-          entry.ipAddress ?? null,
-          entry.userAgent ?? null,
-          entry.details ? JSON.stringify(entry.details) : null,
-        ]
-      );
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::inet, $8, $9, NOW())`;
+    const params = [
+      entry.actorId,
+      entry.actorScope,
+      entry.organizationId ?? null,
+      entry.action,
+      entry.resourceType ?? null,
+      entry.resourceId ?? null,
+      entry.ipAddress ?? null,
+      entry.userAgent ?? null,
+      entry.details ? JSON.stringify(entry.details) : null,
+    ];
+
+    if (client) {
+      await client.query(sql, params);
+      return;
+    }
+
+    try {
+      await this.database.query(sql, params);
     } catch (error) {
       logger.error('Failed to write audit log', { error, action: entry.action });
     }
@@ -148,7 +175,7 @@ export class AuditService {
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const rows = await this.database.query(
+    const rows = await this.database.query<AuditListRow>(
       `SELECT al.id, al.action, al.actor_scope, al.resource_type, al.resource_id,
               al.details, al.ip_address, al.created_at, al.organization_id,
               au.email AS actor_email, au.full_name AS actor_name, au.role AS actor_role,
@@ -162,13 +189,13 @@ export class AuditService {
       args
     );
 
-    const count = await this.database.query(
+    const count = await this.database.query<{ total: string }>(
       `SELECT COUNT(*) AS total FROM audit_logs al ${where}`,
       args
     );
 
     return {
-      rows: rows.rows.map((r: any) => ({
+      rows: rows.rows.map((r) => ({
         id: String(r.id),
         action: r.action,
         actorScope: r.actor_scope,
@@ -187,7 +214,7 @@ export class AuditService {
           ? { email: r.actor_email, name: r.actor_name, role: r.actor_role }
           : null,
       })),
-      total: parseInt(count.rows[0].total) || 0,
+      total: parseInt(count.rows[0].total, 10) || 0,
     };
   }
 
