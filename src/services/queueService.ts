@@ -23,6 +23,11 @@ const TERMINAL_STATUSES = ['completed', 'cancelled'];
  * (pricingService: physical pages x copies). The printer contract speaks in
  * pages per copy, so divide back rather than multiplying by copies again.
  */
+/** The print window in whole minutes. Interpolated into SQL, so it must be an integer. */
+function printWindowMinutes(): number {
+  return Math.max(1, Math.trunc(env.printer.print_window_minutes));
+}
+
 function pagesPerCopy(totalPages: number | null, copies: number | null): number {
   return Math.round((totalPages || 0) / (copies || 1));
 }
@@ -343,6 +348,10 @@ export class QueueService {
             AND pj.kiosk_id = $1
             AND pj.payment_status = 'paid'
             AND pq.retry_count < pq.max_retries
+            -- Never hand out a job whose print window has closed. Its refund is
+            -- already flagged, and a stale job must not print for a customer who
+            -- has left. The window is an integer from config, not request data.
+            AND pj.paid_at > NOW() - make_interval(mins => ${printWindowMinutes()})
             AND (pj.color_mode <> 'color'  OR $2 = true)
             AND (pj.print_sides <> 'double' OR $3 = true)
           ORDER BY pq.priority DESC, pq.queued_at ASC
@@ -662,6 +671,48 @@ export class QueueService {
           WHERE pq.job_id = pj.id AND pj.id = ANY($1::uuid[])`,
         [result.rows.map((r) => r.job_id)]
       );
+    }
+
+    return result.rowCount || 0;
+  }
+
+  /**
+   * Fail every paid job still queued or assigned once its print window has
+   * closed (paid_at + PRINT_WINDOW_MINUTES). The job is never picked up again,
+   * and it stays `payment_status = paid` so the attention queue flags it for a
+   * one-click refund. A `printing` job is left alone: the printer is already
+   * producing it, and failing it would leave paper on the tray with no record.
+   */
+  async expireOutOfWindow(): Promise<number> {
+    const result = await this.database.query<{ job_id: string }>(
+      `UPDATE print_queue pq SET
+         status = 'failed',
+         printer_id = NULL,
+         assigned_at = NULL,
+         lease_expires_at = NULL,
+         error_code = 'PRINT_WINDOW_EXPIRED',
+         error_message = 'Not printed within the print window after payment',
+         failed_at = NOW(),
+         updated_at = NOW()
+       FROM print_jobs pj
+       WHERE pj.id = pq.job_id
+         AND pq.status IN ('queued', 'assigned')
+         AND pj.paid_at < NOW() - make_interval(mins => ${printWindowMinutes()})
+       RETURNING pq.job_id`
+    );
+
+    if (result.rowCount) {
+      const ids = result.rows.map((r) => r.job_id);
+      await this.database.query(
+        `UPDATE print_jobs SET status = 'failed',
+                error_message = 'Not printed within the print window; refund required'
+          WHERE id = ANY($1::uuid[])`,
+        [ids]
+      );
+      logger.warn('Paid jobs failed after their print window closed', {
+        count: ids.length,
+        jobIds: ids,
+      });
     }
 
     return result.rowCount || 0;

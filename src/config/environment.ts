@@ -74,6 +74,8 @@ export interface Environment {
     job_lease_seconds: number;
     document_url_ttl_seconds: number;
     heartbeat_timeout_seconds: number;
+    /** A paid job must be printed within this many minutes of payment, or it fails for refund. */
+    print_window_minutes: number;
   };
   thresholds: {
     inactive_shop_days: number;
@@ -186,6 +188,8 @@ const env: Environment = {
     document_url_ttl_seconds: parseInt(process.env.PRINTER_DOCUMENT_URL_TTL_SECONDS || '900', 10),
     // No heartbeat for this long => printer marked offline and stops receiving jobs.
     heartbeat_timeout_seconds: parseInt(process.env.PRINTER_HEARTBEAT_TIMEOUT_SECONDS || '180', 10),
+    // Counted from payment. Within it a job may be retried; after it, the job fails for refund.
+    print_window_minutes: positiveInt(process.env.PRINT_WINDOW_MINUTES, 15),
   },
   // Operational thresholds for the dashboards. Defaults are deliberately
   // conservative starting points, meant to be tuned once real traffic exists.

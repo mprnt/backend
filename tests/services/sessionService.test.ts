@@ -40,6 +40,15 @@ describe('SessionService', () => {
         fields: [],
       });
 
+      // Mock printer heartbeat check: online
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ '?column?': 1 }],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: [],
+      });
+
       // Mock session creation
       const mockSession = {
         id: '456e4567-e89b-12d3-a456-426614174001',

@@ -136,6 +136,16 @@ export class SessionService {
       logger.info('Auto-assigned kiosk', { kioskId: kiosk.kiosk_id });
     }
 
+    // Do not take payment for a kiosk that cannot print right now.
+    if (!(await this.isPrinterOnline(kiosk.id))) {
+      logger.warn('Kiosk printer offline; session refused', { kioskId: kiosk.kiosk_id });
+      throw new AppError(
+        "This kiosk's printer is offline right now, so you can't print here. Please try again later.",
+        503,
+        'PRINTER_OFFLINE'
+      );
+    }
+
     // Generate session ID and expiry
     const sessionId = this.generateSessionId();
     const expiresAt = this.calculateExpiry();
@@ -182,6 +192,24 @@ export class SessionService {
     });
 
     return { session, kiosk, sessionToken };
+  }
+
+  /**
+   * True when a printer at this kiosk is sending heartbeats. A printer that has
+   * not heartbeated within the timeout is treated as offline, the same rule the
+   * reaper uses to mark it offline.
+   */
+  async isPrinterOnline(kioskUuid: string): Promise<boolean> {
+    const result = await db.query(
+      `SELECT 1 FROM printers
+        WHERE kiosk_id = $1
+          AND revoked_at IS NULL
+          AND status IN ('online', 'busy')
+          AND last_heartbeat > NOW() - ($2 || ' seconds')::interval
+        LIMIT 1`,
+      [kioskUuid, String(env.printer.heartbeat_timeout_seconds)]
+    );
+    return result.rows.length > 0;
   }
 
   /**
