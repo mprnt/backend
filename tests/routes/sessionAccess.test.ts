@@ -29,6 +29,7 @@ describe('customer routes require the session token', () => {
         'FROM kiosks WHERE kiosk_id',
         [{ id: 'k1', kiosk_id: 'M001', status: 'active', location: 'L', capabilities: {} }],
       ],
+      ['FROM printers', [{ '?column?': 1 }]],
       [
         'INSERT INTO print_sessions',
         [{ id: 'ps-1', session_id: 'S1', status: 'draft', expires_at: new Date() }],

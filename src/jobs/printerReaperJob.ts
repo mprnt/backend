@@ -10,21 +10,27 @@ import logger from '../utils/logger';
  *  1. A printer that stops heartbeating is marked offline.
  *  2. A job whose lease expired (the Pi died mid-print) is returned to the
  *     queue, or failed for good once retries are exhausted.
+ *  3. A paid job that was not printed within the print window after payment
+ *     fails for good, and is flagged for a one-click refund.
  *
  * Without step 2 a job stuck in `printing` would never complete, never fail,
  * and never refund.
  */
 export async function runPrinterReaper(): Promise<void> {
   try {
+    // Window first: a job past its window must not be requeued by the lease
+    // sweep and handed out again.
+    const expired = await queueService.expireOutOfWindow();
     const [offline, reclaimed] = await Promise.all([
       queueService.markStaleAsOffline(),
       queueService.reclaimExpiredLeases(),
     ]);
 
-    if (offline > 0 || reclaimed > 0) {
+    if (offline > 0 || reclaimed > 0 || expired > 0) {
       logger.info('Printer reaper swept', {
         printersMarkedOffline: offline,
         jobsReclaimed: reclaimed,
+        jobsExpiredOutOfWindow: expired,
       });
     }
   } catch (error) {
