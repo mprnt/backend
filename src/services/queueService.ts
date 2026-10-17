@@ -11,6 +11,7 @@ import {
 import env from '../config/environment';
 import logger from '../utils/logger';
 import { storageService } from './storageService';
+import { websocketService } from './websocketService';
 
 /**
  * Terminal states. A job in one of these never moves again, which makes every
@@ -691,7 +692,7 @@ export class QueueService {
          assigned_at = NULL,
          lease_expires_at = NULL,
          error_code = 'PRINT_WINDOW_EXPIRED',
-         error_message = 'Not printed within the print window after payment',
+         error_message = 'We could not print your job within 15 minutes of payment. Please show this screen to shop staff for a refund.',
          failed_at = NOW(),
          updated_at = NOW()
        FROM print_jobs pj
@@ -713,6 +714,15 @@ export class QueueService {
         count: ids.length,
         jobIds: ids,
       });
+
+      // Tell any screen that is open right now. The queue row alone is not
+      // enough: a live connection only hears about pushed updates.
+      for (const id of ids) {
+        websocketService.broadcastJobStatus(id, 'failed', {
+          errorMessage:
+            'We could not print your job within 15 minutes of payment. Please show this screen to shop staff for a refund.',
+        });
+      }
     }
 
     return result.rowCount || 0;

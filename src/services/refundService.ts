@@ -2,7 +2,7 @@ import { Database, PoolClient, db } from '../config/database';
 import { AppError } from '../utils/errors';
 import { IPaymentService } from '../types/payment';
 import logger from '../utils/logger';
-import { RazorpayService } from './razorpayService';
+import { GatewayErrorDetail, RazorpayService } from './razorpayService';
 
 type RefundGateway = Pick<IPaymentService, 'refundPayment'>;
 
@@ -42,6 +42,13 @@ const UNREFUNDABLE_QUEUE_STATUSES = ['assigned', 'printing', 'completed'];
  * The job row is locked for the whole operation, so concurrent requests for
  * the same job serialise and a printer cannot be handed the job mid-refund.
  */
+/** The Razorpay error attached by RazorpayService, if the failure came from the gateway. */
+function gatewayOf(error: unknown): GatewayErrorDetail | undefined {
+  return typeof error === 'object' && error !== null && 'gateway' in error
+    ? (error.gateway as GatewayErrorDetail)
+    : undefined;
+}
+
 export class RefundService {
   private gateway?: RefundGateway;
 
@@ -147,12 +154,21 @@ export class RefundService {
           { job_id: params.jobId }
         );
       } catch (error) {
+        // Keep Razorpay's own words: "invalid request sent" alone does not say
+        // which field was wrong, and the admin needs to act on the reason.
+        const gateway = gatewayOf(error);
         logger.error('Gateway refund failed', {
           jobId: params.jobId,
           paymentId: captured.payment_id,
+          gateway,
           error: error instanceof Error ? error.message : error,
         });
-        throw new AppError('Payment gateway refused the refund', 502, 'REFUND_FAILED');
+        const detail = gateway
+          ? `${gateway.description}${gateway.field ? ` (field: ${gateway.field})` : ''}${
+              gateway.code ? ` [${gateway.code}]` : ''
+            }`
+          : 'no details returned';
+        throw new AppError(`Razorpay refused the refund: ${detail}`, 502, 'REFUND_FAILED');
       }
 
       const row = await this.recordRefund(client, {

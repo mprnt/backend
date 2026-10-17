@@ -57,6 +57,39 @@ interface RazorpayRefund {
  * Switch to live mode by setting RAZORPAY_KEY_ID to a key prefixed
  * with "rzp_live_" in your environment. Test mode keys start with "rzp_test_".
  */
+/** Razorpay's error body, kept whole so a refusal says what was wrong. */
+export interface GatewayErrorDetail {
+  status: number;
+  description: string;
+  code?: string;
+  field?: string;
+  reason?: string;
+  source?: string;
+  step?: string;
+}
+
+/** Reads the `error` object Razorpay returns on a non-2xx response. Pure, so it can be tested. */
+export function gatewayErrorDetail(status: number, body: unknown): GatewayErrorDetail {
+  const error =
+    typeof body === 'object' && body !== null && 'error' in body ? body.error : undefined;
+  const fields: Record<string, unknown> =
+    typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : {};
+  const text = (key: string): string | undefined => {
+    const value = fields[key];
+    return typeof value === 'string' && value ? value : undefined;
+  };
+
+  return {
+    status,
+    description: text('description') ?? 'Razorpay API error',
+    code: text('code'),
+    field: text('field'),
+    reason: text('reason'),
+    source: text('source'),
+    step: text('step'),
+  };
+}
+
 export class RazorpayService implements IRazorpayService {
   private apiKey: string;
   private apiSecret: string;
@@ -95,15 +128,13 @@ export class RazorpayService implements IRazorpayService {
             if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
               resolve(parsed);
             } else {
-              const errorDesc =
-                typeof parsed.error === 'object' &&
-                parsed.error !== null &&
-                'description' in parsed.error &&
-                typeof (parsed.error as { description?: unknown }).description === 'string'
-                  ? (parsed.error as { description: string }).description
-                  : 'Razorpay API error';
-              const err = new Error(errorDesc) as Error & { statusCode?: number };
-              err.statusCode = res.statusCode || 500;
+              const gateway = gatewayErrorDetail(res.statusCode || 500, parsed);
+              const err = new Error(gateway.description) as Error & {
+                statusCode?: number;
+                gateway?: GatewayErrorDetail;
+              };
+              err.statusCode = gateway.status;
+              err.gateway = gateway;
               reject(err);
             }
           } catch (err) {
