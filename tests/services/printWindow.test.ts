@@ -3,6 +3,7 @@ import { SessionService } from '../../src/services/sessionService';
 import { scriptedDb } from '../helpers/fakeDb';
 import { AppError } from '../../src/middleware/errorHandler';
 import { db as sharedDb } from '../../src/config/database';
+import env from '../../src/config/environment';
 
 jest.mock('../../src/config/database');
 
@@ -101,5 +102,28 @@ describe('print window: a paid job prints within the window or not at all', () =
       expect((err as AppError).code).toBe('PRINTER_OFFLINE');
       expect(db.sqlFor('INSERT INTO print_sessions')).toHaveLength(0);
     });
+  });
+});
+
+describe('PRINTER_HEARTBEAT_REQUIRED (testing switch)', () => {
+  const kiosk = { id: 'k1', kiosk_id: 'M001', status: 'active', location: 'L', capabilities: {} };
+  const original = env.printer.heartbeat_required;
+  afterEach(() => {
+    env.printer.heartbeat_required = original;
+  });
+
+  it('when false, a session is created without any heartbeat check', async () => {
+    env.printer.heartbeat_required = false;
+    const db = scriptedDb([
+      ['FROM kiosks WHERE kiosk_id', [kiosk]],
+      [
+        'INSERT INTO print_sessions',
+        [{ id: 'ps-1', session_id: 'S1', status: 'draft', expires_at: new Date() }],
+      ],
+    ]);
+    (sharedDb.query as unknown as jest.Mock).mockImplementation(db.query);
+
+    await expect(new SessionService().createSession('M001')).resolves.toBeDefined();
+    expect(db.sqlFor('FROM printers')).toHaveLength(0);
   });
 });

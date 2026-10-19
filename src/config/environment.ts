@@ -76,6 +76,11 @@ export interface Environment {
     heartbeat_timeout_seconds: number;
     /** A paid job must be printed within this many minutes of payment, or it fails for refund. */
     print_window_minutes: number;
+    /**
+     * When false, a kiosk is offered for sessions even if its printer has not
+     * sent a heartbeat. For testing only: production must run with it true.
+     */
+    heartbeat_required: boolean;
   };
   thresholds: {
     inactive_shop_days: number;
@@ -190,6 +195,7 @@ const env: Environment = {
     heartbeat_timeout_seconds: parseInt(process.env.PRINTER_HEARTBEAT_TIMEOUT_SECONDS || '180', 10),
     // Counted from payment. Within it a job may be retried; after it, the job fails for refund.
     print_window_minutes: positiveInt(process.env.PRINT_WINDOW_MINUTES, 15),
+    heartbeat_required: process.env.PRINTER_HEARTBEAT_REQUIRED !== 'false',
   },
   // Operational thresholds for the dashboards. Defaults are deliberately
   // conservative starting points, meant to be tuned once real traffic exists.

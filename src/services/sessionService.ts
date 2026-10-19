@@ -137,7 +137,7 @@ export class SessionService {
     }
 
     // Do not take payment for a kiosk that cannot print right now.
-    if (!(await this.isPrinterOnline(kiosk.id))) {
+    if (env.printer.heartbeat_required && !(await this.isPrinterOnline(kiosk.id))) {
       logger.warn('Kiosk printer offline; session refused', { kioskId: kiosk.kiosk_id });
       throw new AppError(
         "This kiosk's printer is offline right now, so you can't print here. Please try again later.",
