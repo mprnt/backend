@@ -168,7 +168,10 @@ export class RazorpayService implements IRazorpayService {
     const body = {
       amount: Math.round(params.amount * 100), // Razorpay accepts amount in paise
       currency: params.currency || 'INR',
-      receipt: `job_${params.jobId}_${Date.now()}`,
+      // Tags let reports and reconciliation separate this flow from any other
+      // flow on the same Razorpay account.
+      receipt: `mprnt_job_${params.jobId}_${Date.now()}`,
+      notes: { product: 'mprnt-print', job_id: params.jobId },
       payment_capture: true, // Auto-capture
     };
 
