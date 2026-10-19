@@ -170,7 +170,8 @@ export class RazorpayService implements IRazorpayService {
       currency: params.currency || 'INR',
       // Tags let reports and reconciliation separate this flow from any other
       // flow on the same Razorpay account.
-      receipt: `mprnt_job_${params.jobId}_${Date.now()}`,
+      // Razorpay caps receipts at 56 characters, so the job ID goes in without dashes.
+      receipt: `mp_${params.jobId.replace(/-/g, '')}_${Date.now()}`,
       notes: { product: 'mprnt-print', job_id: params.jobId },
       payment_capture: true, // Auto-capture
     };
