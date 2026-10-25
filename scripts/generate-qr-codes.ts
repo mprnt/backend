@@ -1,5 +1,5 @@
 /**
- * Generates one printable QR code per QR point.
+ * Generates one printable QR stand per QR point.
  *
  *   npx ts-node scripts/generate-qr-codes.ts --base http://localhost:3001
  *   npx ts-node scripts/generate-qr-codes.ts --base http://192.168.0.102:3001
@@ -9,13 +9,16 @@
  * reads. One code per QR point, not per printer: a QR point is the place
  * people scan, and whichever printer there is free takes the job.
  *
- * Two files per point:
- *   <slug>.svg   a labelled card, ready to print and stick up
- *   <slug>.png   the bare code, for embedding elsewhere
+ * The stand is the MPRNT artwork with this point's QR in it, the same design the
+ * super-admin's onboarding screen makes (scripts/qr-stand/ is a copy of it).
  *
- * The card carries the partner, the place and the code, because six unlabelled
- * QR codes on a desk are indistinguishable and getting them the wrong way
- * round sends customers' jobs to another building.
+ * Two files per point:
+ *   <slug>.svg   the stand as vector, for any print size
+ *   <slug>.png   the stand at print size, 8 × 12 in at 300 dpi
+ *
+ * The stand shows only the QR, as the design requires. The file name carries the
+ * partner, the place and the code, and the list printed for each point repeats
+ * them, so a stand can be matched to its point before it goes up.
  *
  * Reads whichever database DATABASE_URL points at, and only ever reads.
  *
@@ -25,13 +28,17 @@
  *   npx ts-node scripts/generate-qr-codes.ts --base https://mprnt-qr.vercel.app \
  *     --code M002 --name "Front counter" --partner "Shop 2" --location "Shop 2 · front counter"
  *
- * The code must match the QR point exactly, or the card will send customers to
+ * The code must match the QR point exactly, or the stand will send customers to
  * a point that does not exist.
  */
 import fs from 'fs';
 import path from 'path';
-import QRCode from 'qrcode';
+import sharp from 'sharp';
 import { db } from '../src/config/database';
+import { customerAppUrl, qrSvg, slugify, standSvg } from './qr-stand/qr-stand';
+
+/** 8 × 12 in at 300 dpi, the size a stand is printed at. */
+const PRINT_SIZE = { width: 2400, height: 3600 } as const;
 
 interface PointRow {
   code: string;
@@ -45,60 +52,6 @@ interface PointRow {
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   return i === -1 ? undefined : process.argv[i + 1];
-}
-
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function escapeXml(value: string): string {
-  return value.replace(/[<>&'"]/g, (c) =>
-    c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '&' ? '&amp;' : c === "'" ? '&apos;' : '&quot;'
-  );
-}
-
-/**
- * A printable card: the code, who it belongs to, where it is, and the short
- * code itself so a person can match a sheet to a row in the dashboard.
- */
-function card(qrSvg: string, point: PointRow): string {
-  // The generated SVG carries its own width/height and viewBox; strip the
-  // outer element so it can be placed inside this one.
-  const inner = qrSvg.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
-  const viewBox = qrSvg.match(/viewBox="([^"]+)"/)?.[1] ?? '0 0 41 41';
-
-  const partner = escapeXml(point.partner ?? 'Unassigned');
-  const place = escapeXml(point.name);
-  const where = escapeXml(point.location ?? '');
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="560" viewBox="0 0 420 560" role="img"
-     aria-label="QR code for ${partner}, ${place}">
-  <rect width="420" height="560" rx="18" fill="#ffffff"/>
-  <rect x="0.5" y="0.5" width="419" height="559" rx="17.5" fill="none" stroke="#e8e5df"/>
-
-  <text x="210" y="56" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="13" letter-spacing="2.2" fill="#6b6862">SCAN TO PRINT</text>
-
-  <svg x="50" y="86" width="320" height="320" viewBox="${viewBox}">${inner}</svg>
-
-  <text x="210" y="452" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="24" font-weight="600" fill="#1c1b19">${place}</text>
-  <text x="210" y="480" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="15" fill="#6b6862">${partner}</text>
-  ${
-    where
-      ? `<text x="210" y="504" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="12" fill="#9a9790">${where}</text>`
-      : ''
-  }
-
-  <text x="210" y="534" text-anchor="middle" font-family="ui-monospace, Menlo, monospace"
-        font-size="13" letter-spacing="1.4" fill="#1a6240">${escapeXml(point.code)}</text>
-</svg>
-`;
 }
 
 async function main(): Promise<void> {
@@ -158,22 +111,17 @@ async function main(): Promise<void> {
   console.log(`Customer app: ${base}\nWriting to:   ${outDir}\n`);
 
   for (const point of rows) {
-    const url = `${base}/?kioskId=${encodeURIComponent(point.code)}`;
+    const url = customerAppUrl(base, point.code);
     const slug = `${slugify(point.partner ?? 'unassigned')}-${slugify(point.name)}-${slugify(point.code)}`;
 
-    // High correction: these get printed, taped up and scuffed.
-    const qrSvg = await QRCode.toString(url, {
-      type: 'svg',
-      errorCorrectionLevel: 'H',
-      margin: 1,
-    });
+    // High correction is set in the QR itself: these get printed, put up and scuffed.
+    const qr = await qrSvg(url);
 
-    fs.writeFileSync(path.join(outDir, `${slug}.svg`), card(qrSvg, point));
-    await QRCode.toFile(path.join(outDir, `${slug}.png`), url, {
-      width: 900,
-      margin: 2,
-      errorCorrectionLevel: 'H',
-    });
+    fs.writeFileSync(path.join(outDir, `${slug}.svg`), standSvg(qr));
+    // The SVG declares its size in px, so sharp draws it at exactly PRINT_SIZE.
+    await sharp(Buffer.from(standSvg(qr, PRINT_SIZE)))
+      .png()
+      .toFile(path.join(outDir, `${slug}.png`));
 
     const counted = point.printers !== '-';
     const printers = parseInt(point.printers, 10) || 0;
