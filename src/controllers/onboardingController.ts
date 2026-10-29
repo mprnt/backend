@@ -22,6 +22,12 @@ class OnboardingController {
     res.status(201).json({ status: 'success', data: draft });
   }
 
+  /** Super admin: partners still being onboarded. */
+  async listDrafts(_req: Request, res: Response): Promise<void> {
+    const drafts = await onboardingService.listOpenDrafts();
+    res.json({ status: 'success', data: { count: drafts.length, drafts } });
+  }
+
   async getDraft(req: Request, res: Response): Promise<void> {
     const draft = await onboardingService.getDraft(req.params.draftId);
     res.json({ status: 'success', data: draft });

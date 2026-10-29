@@ -76,11 +76,16 @@ export interface UpdateJobStatusParams {
   errorMessage?: string;
   errorCode?: PrintErrorCode;
   printedPages?: number;
+  /**
+   * The `attempt` from the poll response this report belongs to. Optional for
+   * older printers; when present, a report for any other attempt is rejected.
+   */
+  attempt?: number;
 }
 
 export interface PollQueueParams {
   printerId: string;
-  capabilities: PrinterCapabilities;
+  capabilities?: PrinterCapabilities;
 }
 
 export interface JobAssignment {

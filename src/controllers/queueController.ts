@@ -1,10 +1,38 @@
 import { Request, Response } from 'express';
+import { ParamsDictionary } from 'express-serve-static-core';
 import { queueService } from '../services/queueService';
 import { printerAuthService } from '../services/printerAuthService';
 import { fleetService } from '../services/fleetService';
 import { auditService } from '../services/auditService';
-import { PrinterHeartbeat } from '../types/queue';
+import { PrinterCapabilities, PrinterHeartbeat, UpdateJobStatusParams } from '../types/queue';
 import logger from '../utils/logger';
+
+type RequestWithBody<Body> = Request<ParamsDictionary, unknown, Body>;
+
+interface EnrollPrinterBody {
+  printerId: string;
+  kioskId: string;
+  name: string;
+  capabilities: PrinterCapabilities;
+  ipAddress?: string;
+}
+
+interface RegisterPrinterBody {
+  name?: string;
+  capabilities: PrinterCapabilities;
+  ipAddress?: string;
+}
+
+type HeartbeatBody = Omit<PrinterHeartbeat, 'printerId'>;
+
+interface PollQueueBody {
+  capabilities?: PrinterCapabilities;
+}
+
+type UpdateJobStatusBody = Pick<
+  UpdateJobStatusParams,
+  'status' | 'errorMessage' | 'errorCode' | 'printedPages' | 'attempt'
+>;
 
 class QueueController {
   /**
@@ -13,7 +41,7 @@ class QueueController {
    * One-time enrollment. Guarded by the provisioning token. Creates the printer
    * and returns its API key — the only time the plaintext key is ever exposed.
    */
-  async enrollPrinter(req: Request, res: Response): Promise<void> {
+  async enrollPrinter(req: RequestWithBody<EnrollPrinterBody>, res: Response): Promise<void> {
     const { printerId, kioskId, name, capabilities, ipAddress } = req.body;
 
     // Shared with dashboard enrollment. Checks for an existing printer id before
@@ -61,7 +89,7 @@ class QueueController {
    * Re-registration by an already-enrolled printer: refreshes capabilities, name
    * and IP on boot. Authenticated with the printer's own key.
    */
-  async registerPrinter(req: Request, res: Response): Promise<void> {
+  async registerPrinter(req: RequestWithBody<RegisterPrinterBody>, res: Response): Promise<void> {
     const printer = req.printer!;
     const { name, capabilities, ipAddress } = req.body;
 
@@ -91,7 +119,7 @@ class QueueController {
   /**
    * POST /api/v1/queue/heartbeat
    */
-  async updateHeartbeat(req: Request, res: Response): Promise<void> {
+  async updateHeartbeat(req: RequestWithBody<HeartbeatBody>, res: Response): Promise<void> {
     const printer = req.printer!;
 
     // printerId comes from the credentials, never from the body, so one printer
@@ -119,7 +147,7 @@ class QueueController {
    * POST /api/v1/queue/poll
    * Claim the next print job.
    */
-  async pollQueue(req: Request, res: Response): Promise<void> {
+  async pollQueue(req: RequestWithBody<PollQueueBody>, res: Response): Promise<void> {
     const printer = req.printer!;
 
     const assignment = await queueService.pollQueue({
@@ -148,10 +176,10 @@ class QueueController {
    * POST /api/v1/queue/jobs/:jobId/status
    * Report progress or completion for a held job.
    */
-  async updateJobStatus(req: Request, res: Response): Promise<void> {
+  async updateJobStatus(req: RequestWithBody<UpdateJobStatusBody>, res: Response): Promise<void> {
     const printer = req.printer!;
     const { jobId } = req.params;
-    const { status, errorMessage, errorCode, printedPages } = req.body;
+    const { status, errorMessage, errorCode, printedPages, attempt } = req.body;
 
     const result = await queueService.updateJobStatus({
       jobId,
@@ -159,6 +187,7 @@ class QueueController {
       errorMessage,
       errorCode,
       printedPages,
+      attempt,
       printerUuid: printer.id,
     });
 

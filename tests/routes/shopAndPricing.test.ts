@@ -26,6 +26,15 @@ const shopRow = {
   completed_jobs: '21',
   pages_printed: '161',
   first_sale_at: '2026-09-30T10:00:00Z',
+  contact_updated_by_scope: null,
+  contact_updated_at: null,
+  bank_account_holder: null,
+  bank_name: null,
+  bank_ifsc: null,
+  bank_account_last4: null,
+  upi_id: null,
+  payout_updated_by_scope: null,
+  payout_updated_at: null,
 };
 
 describe('GET /admin/shop - a shop reads only its own profile', () => {
@@ -46,6 +55,17 @@ describe('GET /admin/shop - a shop reads only its own profile', () => {
       timezone: 'Asia/Kolkata',
       contactEmail: 'owner@shop.test',
       contactPhone: null,
+      contactUpdatedBy: null,
+      contactUpdatedAt: null,
+      payout: {
+        bankAccountHolder: null,
+        bankName: null,
+        bankIfsc: null,
+        bankAccountLast4: null,
+        upiId: null,
+        updatedBy: null,
+        updatedAt: null,
+      },
       memberSince: '2026-09-28T12:57:12Z',
       fleet: { qrPoints: 1, printers: 2, stations: 1 },
       lifetime: {
@@ -144,7 +164,7 @@ describe('POST /admin/pricing/lists - platform only', () => {
     expect(db.sqlFor('INSERT INTO price_lists')).toHaveLength(0);
   });
 
-  it('a super admin can still publish', async () => {
+  it('a super admin can still publish the platform default', async () => {
     const db = useScriptedDb([
       [
         'INSERT INTO price_lists',
@@ -155,9 +175,22 @@ describe('POST /admin/pricing/lists - platform only', () => {
     const res = await request(app)
       .post(`${API}/pricing/lists`)
       .set('Authorization', bearer({ role: 'super_admin', org: null, perms: ['pricing:write'] }))
-      .send(body);
+      .send({ bwPerPage: 2, colorPerPage: 5 });
 
     expect(res.status).toBe(201);
     expect(db.sqlFor('INSERT INTO price_lists')).toHaveLength(1);
+  });
+
+  it("a super admin cannot set a shop's rate here: shops set their own", async () => {
+    const db = useScriptedDb([]);
+
+    const res = await request(app)
+      .post(`${API}/pricing/lists`)
+      .set('Authorization', bearer({ role: 'super_admin', org: null, perms: ['pricing:write'] }))
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('SHOP_SETS_ITS_OWN_PRICES');
+    expect(db.sqlFor('INSERT INTO price_lists')).toHaveLength(0);
   });
 });

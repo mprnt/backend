@@ -28,6 +28,8 @@ export interface Environment {
     session_timeout_minutes: number;
     /** Extra time a session gets once a payment order is created for it. */
     session_payment_grace_minutes: number;
+    /** 32-byte key, base64. Encrypts shop bank account numbers at rest. Null until configured. */
+    payout_encryption_key: string | null;
   };
   cors: {
     origin: string[];
@@ -131,6 +133,7 @@ const env: Environment = {
     // A customer who opened checkout near the end of the window must not lose
     // their upload while the payment (e.g. UPI) is still settling.
     session_payment_grace_minutes: positiveInt(process.env.SESSION_PAYMENT_GRACE_MINUTES, 15),
+    payout_encryption_key: process.env.PAYOUT_ENCRYPTION_KEY || null,
   },
   cors: {
     origin: parseOrigins(process.env.CORS_ORIGIN || 'http://localhost:3000'),

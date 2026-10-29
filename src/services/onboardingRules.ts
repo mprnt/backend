@@ -231,6 +231,18 @@ export interface DraftPayload {
     email?: string;
     phone?: string | null;
   };
+  /**
+   * Bank and UPI, optional. The account number is never kept in clear in a draft: a draft
+   * holds its last four digits and an encrypted copy, and only the last four are returned.
+   */
+  payout?: {
+    bankAccountHolder?: string;
+    bankName?: string;
+    bankIfsc?: string;
+    upiId?: string;
+    bankAccountLast4?: string;
+    bankAccountNumberEnc?: string;
+  };
 }
 
 export interface DraftProblem {
