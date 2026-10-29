@@ -45,6 +45,9 @@ import {
   updateAdminSchema,
   permissionOverrideSchema,
   createPriceListSchema,
+  shopPricingSchema,
+  shopContactSchema,
+  payoutSchema,
   reportQuerySchema,
   idParamSchema,
   createKioskSchema,
@@ -130,6 +133,15 @@ router.patch(
   validate(idParamSchema, 'params'),
   validate(updateOrganizationSchema),
   h(c.updateOrganization.bind(c))
+);
+// The platform sets a shop's bank and UPI on its behalf, when the shop has not.
+router.patch(
+  '/organizations/:id/payout',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_WRITE),
+  validate(idParamSchema, 'params'),
+  validate(payoutSchema),
+  h(c.updateOrganizationPayout.bind(c))
 );
 router.post(
   '/organizations/:id/status',
@@ -234,6 +246,26 @@ router.get('/permissions', h(c.listPermissionCatalogue.bind(c)));
 // nothing from the request at all - the shop is the principal's own.
 // ---------------------------------------------------------------------------
 router.get('/shop', requirePermission(PERMISSIONS.REPORTS_READ), h(c.getShop.bind(c)));
+// The shop writes its own contact details, bank and UPI (owners), and its own rates
+// (owners and managers). Each writes only to the caller's shop, as getShop reads only it.
+router.put(
+  '/shop/contact',
+  requirePermission(PERMISSIONS.SHOP_PROFILE_WRITE),
+  validate(shopContactSchema),
+  h(c.updateOwnContact.bind(c))
+);
+router.put(
+  '/shop/payout',
+  requirePermission(PERMISSIONS.SHOP_PROFILE_WRITE),
+  validate(payoutSchema),
+  h(c.updateOwnPayout.bind(c))
+);
+router.put(
+  '/shop/pricing',
+  requirePermission(PERMISSIONS.SHOP_PRICING_WRITE),
+  validate(shopPricingSchema),
+  h(c.setOwnPricing.bind(c))
+);
 
 // ---------------------------------------------------------------------------
 // Reports — the shop dashboard

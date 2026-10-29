@@ -124,6 +124,48 @@ export const createPriceListSchema = Joi.object({
   // A kiosk-scoped price needs its organization so resolution is unambiguous.
   .with('kioskId', 'organizationId');
 
+/** A shop sets its own black-and-white and colour rate. Shops never set a QR point's rate. */
+export const shopPricingSchema = Joi.object({
+  bwPerPage: Joi.number().min(0).max(1000).precision(2).required(),
+  colorPerPage: Joi.number().min(0).max(1000).precision(2).required(),
+}).unknown(false);
+
+/** The shop's own contact details. A field sent empty is cleared. */
+export const shopContactSchema = Joi.object({
+  contactEmail: Joi.string().trim().email().max(255).allow('', null),
+  contactPhone: Joi.string()
+    .trim()
+    .pattern(/^\+?[0-9 -]{7,20}$/)
+    .allow('', null),
+})
+  .min(1)
+  .unknown(false);
+
+/**
+ * Bank and UPI details, set by MPRNT or by the shop. Every field is optional, so a
+ * detail can be added later. A field sent empty is cleared. The account number is
+ * digits only; the screen strips spaces before sending.
+ */
+export const payoutFields = {
+  bankAccountHolder: Joi.string().trim().max(255).allow('', null),
+  bankName: Joi.string().trim().max(255).allow('', null),
+  bankAccountNumber: Joi.string()
+    .trim()
+    .pattern(/^[0-9]{6,18}$/)
+    .allow('', null),
+  bankIfsc: Joi.string()
+    .trim()
+    .uppercase()
+    .pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/)
+    .allow('', null),
+  upiId: Joi.string()
+    .trim()
+    .pattern(/^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,63}$/)
+    .allow('', null),
+};
+
+export const payoutSchema = Joi.object(payoutFields).min(1).unknown(false);
+
 const printerIdentifier = Joi.string()
   .pattern(/^[A-Za-z0-9_-]{3,64}$/)
   .messages({

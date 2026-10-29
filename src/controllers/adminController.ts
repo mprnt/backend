@@ -6,6 +6,7 @@ import { organizationService } from '../services/organizationService';
 import { dashboardService } from '../services/dashboardService';
 import { auditService } from '../services/auditService';
 import { pricingService } from '../services/pricingService';
+import type { PayoutInput } from '../services/payoutDetails';
 import { platformService } from '../services/platformService';
 import { fleetService } from '../services/fleetService';
 import { printerAuthService } from '../services/printerAuthService';
@@ -41,6 +42,9 @@ type CreatePriceListBody = {
   minCharge?: number;
   effectiveFrom?: string;
 };
+type OwnPricingBody = { bwPerPage: number; colorPerPage: number };
+type OwnContactBody = { contactEmail?: string | null; contactPhone?: string | null };
+type PayoutBody = PayoutInput;
 
 interface OrganizationIdRow extends QueryResultRow {
   organization_id: string | null;
@@ -57,6 +61,8 @@ interface PriceListRow extends QueryResultRow {
   min_charge: string | number;
   effective_from: Date;
   created_at: Date;
+  /** Who published the rate: MPRNT for the platform default, or the shop itself. */
+  created_by_scope: 'platform' | 'shop' | null;
 }
 
 interface PriceListIdRow extends QueryResultRow {
@@ -170,6 +176,95 @@ class AdminController {
 
     const shop = await organizationService.getOwnProfile(organizationId);
     res.json({ status: 'success', data: shop });
+  }
+
+  /**
+   * The shop the caller belongs to, for the write endpoints below. As with getShop, the
+   * shop comes from the session and never from the request, so a shop cannot write to
+   * another one. A super admin has no shop and is refused here.
+   */
+  private ownShopId(req: Request): string {
+    const organizationId = req.admin!.organizationId;
+    if (!organizationId || req.admin!.role === 'super_admin') {
+      throw new AppError('This account is not attached to a shop', 404);
+    }
+    return organizationId;
+  }
+
+  /** Shop owner: the shop's own contact email and phone. An empty field is cleared. */
+  async updateOwnContact(req: RequestWithBody<OwnContactBody>, res: Response): Promise<void> {
+    const organizationId = this.ownShopId(req);
+    const body = {
+      contactEmail: req.body.contactEmail === '' ? null : req.body.contactEmail,
+      contactPhone: req.body.contactPhone === '' ? null : req.body.contactPhone,
+    };
+    await organizationService.update(organizationId, body, 'shop');
+
+    await auditService.fromRequest(req, 'shop.contact_updated', {
+      resourceType: 'organization',
+      resourceId: organizationId,
+      organizationId,
+      details: { fields: Object.keys(req.body) },
+    });
+
+    const shop = await organizationService.getOwnProfile(organizationId);
+    res.json({ status: 'success', data: shop });
+  }
+
+  /**
+   * Shop owner: the shop's own bank and UPI details. The audit entry names the fields
+   * changed, never their values.
+   */
+  async updateOwnPayout(req: RequestWithBody<PayoutBody>, res: Response): Promise<void> {
+    const organizationId = this.ownShopId(req);
+    await organizationService.updatePayout(organizationId, req.body, 'shop');
+
+    await auditService.fromRequest(req, 'shop.payout_updated', {
+      resourceType: 'organization',
+      resourceId: organizationId,
+      organizationId,
+      details: { fields: Object.keys(req.body) },
+    });
+
+    const shop = await organizationService.getOwnProfile(organizationId);
+    res.json({ status: 'success', data: shop });
+  }
+
+  /**
+   * Shop owner or manager: publish the shop's own black-and-white and colour rate. A new
+   * row supersedes the old one from now, as every rate change does, so quotes already
+   * shown cannot move. The minimum charge carries over from the rate in force.
+   */
+  async setOwnPricing(req: RequestWithBody<OwnPricingBody>, res: Response): Promise<void> {
+    const organizationId = this.ownShopId(req);
+    const { bwPerPage, colorPerPage } = req.body;
+
+    const current = await db.query<{ min_charge: string }>(
+      `SELECT min_charge FROM price_lists
+        WHERE kiosk_id IS NULL AND (organization_id = $1 OR organization_id IS NULL)
+        ORDER BY (organization_id IS NULL), effective_from DESC
+        LIMIT 1`,
+      [organizationId]
+    );
+    const minCharge = current.rows[0] ? Number(current.rows[0].min_charge) : 0;
+
+    const result = await db.query<PriceListIdRow>(
+      `INSERT INTO price_lists (
+         organization_id, kiosk_id, bw_per_page, color_per_page, min_charge,
+         effective_from, created_by
+       ) VALUES ($1, NULL, $2, $3, $4, NOW(), $5)
+       RETURNING *`,
+      [organizationId, bwPerPage, colorPerPage, minCharge, req.admin!.id]
+    );
+
+    await auditService.fromRequest(req, 'shop.pricing_published', {
+      resourceType: 'price_list',
+      resourceId: result.rows[0].id,
+      organizationId,
+      details: { bwPerPage, colorPerPage },
+    });
+
+    res.status(201).json({ status: 'success', data: result.rows[0] });
   }
 
   async changePassword(req: RequestWithBody<ChangePasswordBody>, res: Response): Promise<void> {
@@ -450,6 +545,24 @@ class AdminController {
   }
 
   /** Super admin: every shop side by side for the period. */
+  /**
+   * Super admin: set a shop's bank and UPI details on its behalf. Recorded as 'platform',
+   * so the shop's own view can show that MPRNT entered them. The audit entry names the
+   * fields changed, never their values.
+   */
+  async updateOrganizationPayout(req: RequestWithBody<PayoutBody>, res: Response): Promise<void> {
+    const org = await organizationService.updatePayout(req.params.id, req.body, 'platform');
+
+    await auditService.fromRequest(req, 'organization.payout_updated', {
+      resourceType: 'organization',
+      resourceId: org.id,
+      organizationId: org.id,
+      details: { fields: Object.keys(req.body) },
+    });
+
+    res.json({ status: 'success', data: org });
+  }
+
   async getOrganizationComparison(req: Request, res: Response): Promise<void> {
     const period = ((req.query.period as string) || 'month') as ReportPeriod;
     const data = await platformService.getOrganizationComparison(period);
@@ -731,7 +844,11 @@ class AdminController {
       }
     }
 
-    const info = await pricingService.getPricingInfo(kioskId);
+    // With no QR point named, a shop sees its own standard rate; the platform sees the default.
+    const info = await pricingService.getPricingInfo(
+      kioskId,
+      kioskId ? undefined : (req.tenantId ?? undefined)
+    );
 
     res.json({ status: 'success', data: info });
   }
@@ -740,10 +857,14 @@ class AdminController {
     const scoped = req.tenantId !== null && req.tenantId !== undefined;
 
     const result = await db.query<PriceListRow>(
-      `SELECT pl.*, o.name AS organization_name, k.kiosk_id AS kiosk_code
+      `SELECT pl.*, o.name AS organization_name, k.kiosk_id AS kiosk_code,
+              CASE WHEN au.role = 'super_admin' THEN 'platform'
+                   WHEN au.id IS NOT NULL THEN 'shop'
+                   ELSE NULL END AS created_by_scope
          FROM price_lists pl
          LEFT JOIN organizations o ON o.id = pl.organization_id
          LEFT JOIN kiosks k        ON k.id = pl.kiosk_id
+         LEFT JOIN admin_users au  ON au.id = pl.created_by
         ${scoped ? 'WHERE pl.organization_id = $1 OR pl.organization_id IS NULL' : ''}
         ORDER BY pl.effective_from DESC
         LIMIT 200`,
@@ -765,6 +886,7 @@ class AdminController {
           minCharge: Number(r.min_charge),
           effectiveFrom: r.effective_from,
           createdAt: r.created_at,
+          createdBy: r.created_by_scope,
         })),
       },
     });
@@ -776,6 +898,16 @@ class AdminController {
    * historical reporting keeps matching what customers actually paid.
    */
   async createPriceList(req: RequestWithBody<CreatePriceListBody>, res: Response): Promise<void> {
+    // A shop sets its own rates (PUT /shop/pricing). This route is the platform's default
+    // only: a rate for a shop or a QR point must not be set from here.
+    if (req.body.organizationId || req.body.kioskId) {
+      throw new AppError(
+        'Shop and QR point rates are set by the shop. This route only sets the platform default.',
+        400,
+        'SHOP_SETS_ITS_OWN_PRICES'
+      );
+    }
+
     const { organizationId, kioskId, bwPerPage, colorPerPage, minCharge, effectiveFrom } = req.body;
 
     if (kioskId) {
