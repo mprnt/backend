@@ -7,6 +7,8 @@ import logger from '../utils/logger';
 import { generateTemporaryPassword } from '../utils/temporaryPassword';
 import { auditService } from './auditService';
 import { storageService } from './storageService';
+import { PayoutInput, cleanText } from './payoutDetails';
+import { encryptAccountNumber } from '../utils/payoutCrypto';
 import {
   checkGstin,
   completionProblems,
@@ -40,6 +42,45 @@ type Queryable = Pick<PoolClient, 'query'>;
 export interface RequestMeta {
   ipAddress?: string;
   userAgent?: string;
+}
+
+/** A patch from the wizard. Its payout may carry the account number in clear, for as long as it takes to encrypt it. */
+export type DraftPatch = Omit<DraftPayload, 'payout'> & { payout?: PayoutInput };
+
+type StoredPayout = NonNullable<DraftPayload['payout']>;
+
+/**
+ * Folds a payout patch into what the draft already holds. The account number is encrypted
+ * here and not kept: the draft keeps its last four digits and the encrypted copy. A field
+ * sent empty is stored empty, which clears it when the partner is created.
+ */
+function mergePayout(current: StoredPayout | undefined, input: PayoutInput): StoredPayout {
+  const next: StoredPayout = { ...(current ?? {}) };
+  const set = (
+    key: 'bankAccountHolder' | 'bankName' | 'bankIfsc' | 'upiId',
+    value: string | null | undefined
+  ) => {
+    if (value !== undefined) next[key] = value ?? '';
+  };
+  set('bankAccountHolder', input.bankAccountHolder);
+  set('bankName', input.bankName);
+  set('bankIfsc', input.bankIfsc);
+  set('upiId', input.upiId);
+
+  if (input.bankAccountNumber !== undefined) {
+    const digits = cleanText(input.bankAccountNumber)?.replace(/\s+/g, '') ?? null;
+    next.bankAccountLast4 = digits ? digits.slice(-4) : '';
+    next.bankAccountNumberEnc = digits ? encryptAccountNumber(digits) : '';
+  }
+  return next;
+}
+
+/** The draft as the screens see it: the encrypted account number is never returned. */
+function forScreens(payload: DraftPayload): DraftPayload {
+  if (!payload.payout?.bankAccountNumberEnc) return payload;
+  const payout: StoredPayout = { ...payload.payout };
+  delete payout.bankAccountNumberEnc;
+  return { ...payload, payout };
 }
 
 export interface DraftView {
@@ -146,7 +187,7 @@ export class OnboardingService {
       status: this.effectiveStatus(row),
       version: row.version,
       expiresAt: row.expires_at.toISOString(),
-      payload: row.payload,
+      payload: forScreens(row.payload),
       documents: docs.rows.map((d) => ({
         id: d.id,
         kind: d.kind,
@@ -163,7 +204,7 @@ export class OnboardingService {
    * Saves part of the draft. The caller names the version it read; if someone
    * else saved in between, the save is refused instead of overwriting them.
    */
-  async patchDraft(id: string, expectedVersion: number, patch: DraftPayload): Promise<DraftView> {
+  async patchDraft(id: string, expectedVersion: number, patch: DraftPatch): Promise<DraftView> {
     await this.tx(async (client) => {
       const row = await this.loadDraft(client, id, true);
       if (!row) throw new AppError('Draft not found', 404, 'DRAFT_NOT_FOUND');
@@ -185,6 +226,9 @@ export class OnboardingService {
       if (patch.qrPoint !== undefined) {
         merged.qrPoint =
           patch.qrPoint === null ? null : { ...(row.payload.qrPoint ?? {}), ...patch.qrPoint };
+      }
+      if (patch.payout !== undefined) {
+        merged.payout = mergePayout(row.payload.payout, patch.payout);
       }
 
       await client.query(
@@ -424,6 +468,26 @@ export class OnboardingService {
         ]
       );
       const organizationId = orgResult.rows[0].id;
+
+      const payout = p.payout ?? {};
+      if (Object.values(payout).some((v) => v !== undefined && v !== '')) {
+        await client.query(
+          `UPDATE organizations SET
+             bank_account_holder = $2, bank_name = $3, bank_ifsc = $4, upi_id = $5,
+             bank_account_last4 = $6, bank_account_number_enc = $7,
+             payout_updated_by_scope = 'platform', payout_updated_at = NOW()
+           WHERE id = $1`,
+          [
+            organizationId,
+            cleanText(payout.bankAccountHolder),
+            cleanText(payout.bankName),
+            cleanText(payout.bankIfsc)?.toUpperCase() ?? null,
+            cleanText(payout.upiId),
+            payout.bankAccountLast4 || null,
+            payout.bankAccountNumberEnc || null,
+          ]
+        );
+      }
 
       if (p.model!.businessModel === 'revenue-share') {
         await client.query(

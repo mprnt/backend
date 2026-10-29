@@ -1,8 +1,9 @@
 import { Database, QueryResultRow, db } from '../config/database';
 import { AppError } from '../utils/errors';
-import { Organization, OrganizationStatus } from '../types/admin';
+import { DetailsSource, Organization, OrganizationStatus, PayoutDetails } from '../types/admin';
 import { BusinessModelId } from '../types/businessModels';
 import logger from '../utils/logger';
+import { PayoutInput, addPayoutAssignments } from './payoutDetails';
 
 interface OrganizationRow extends QueryResultRow {
   id: string;
@@ -13,6 +14,15 @@ interface OrganizationRow extends QueryResultRow {
   timezone: string;
   contact_email: string | null;
   contact_phone: string | null;
+  contact_updated_at?: Date | null;
+  contact_updated_by_scope?: DetailsSource | null;
+  bank_account_holder?: string | null;
+  bank_name?: string | null;
+  bank_ifsc?: string | null;
+  bank_account_last4?: string | null;
+  upi_id?: string | null;
+  payout_updated_at?: Date | null;
+  payout_updated_by_scope?: DetailsSource | null;
   kiosk_count?: string;
   admin_count?: string;
   created_at: Date;
@@ -35,6 +45,10 @@ export interface ShopProfile {
   timezone: string;
   contactEmail: string | null;
   contactPhone: string | null;
+  contactUpdatedBy: DetailsSource | null;
+  contactUpdatedAt: string | null;
+  /** The bank and UPI details. The date is ISO text, as the rest of this shape is. */
+  payout: Omit<PayoutDetails, 'updatedAt'> & { updatedAt: string | null };
   /** When the shop joined, as UTC ISO text (formatted in SQL, host-tz independent). */
   memberSince: string;
   fleet: { qrPoints: number; printers: number; stations: number };
@@ -54,6 +68,15 @@ interface ShopProfileRow extends QueryResultRow {
   timezone: string;
   contact_email: string | null;
   contact_phone: string | null;
+  contact_updated_by_scope: DetailsSource | null;
+  contact_updated_at: string | null;
+  bank_account_holder: string | null;
+  bank_name: string | null;
+  bank_ifsc: string | null;
+  bank_account_last4: string | null;
+  upi_id: string | null;
+  payout_updated_by_scope: DetailsSource | null;
+  payout_updated_at: string | null;
   member_since: string;
   qr_points: string;
   printers: string;
@@ -98,6 +121,17 @@ export class OrganizationService {
       timezone: row.timezone,
       contactEmail: row.contact_email,
       contactPhone: row.contact_phone,
+      contactUpdatedBy: row.contact_updated_by_scope ?? null,
+      contactUpdatedAt: row.contact_updated_at ?? null,
+      payout: {
+        bankAccountHolder: row.bank_account_holder ?? null,
+        bankName: row.bank_name ?? null,
+        bankIfsc: row.bank_ifsc ?? null,
+        bankAccountLast4: row.bank_account_last4 ?? null,
+        upiId: row.upi_id ?? null,
+        updatedBy: row.payout_updated_by_scope ?? null,
+        updatedAt: row.payout_updated_at ?? null,
+      },
       kioskCount: row.kiosk_count !== undefined ? parseInt(row.kiosk_count) : undefined,
       adminCount: row.admin_count !== undefined ? parseInt(row.admin_count) : undefined,
       createdAt: row.created_at,
@@ -198,6 +232,11 @@ export class OrganizationService {
   async getOwnProfile(organizationId: string): Promise<ShopProfile> {
     const result = await this.database.query<ShopProfileRow>(
       `SELECT o.name, o.status, o.timezone, o.contact_email, o.contact_phone,
+              o.contact_updated_by_scope,
+              to_char(o.contact_updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS contact_updated_at,
+              o.bank_account_holder, o.bank_name, o.bank_ifsc, o.bank_account_last4, o.upi_id,
+              o.payout_updated_by_scope,
+              to_char(o.payout_updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS payout_updated_at,
               to_char(o.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS member_since,
               (SELECT COUNT(*) FROM kiosks k WHERE k.organization_id = o.id) AS qr_points,
               (SELECT COUNT(*) FROM printers p JOIN kiosks k ON k.id = p.kiosk_id
@@ -232,6 +271,17 @@ export class OrganizationService {
       timezone: r.timezone,
       contactEmail: r.contact_email,
       contactPhone: r.contact_phone,
+      contactUpdatedBy: r.contact_updated_by_scope,
+      contactUpdatedAt: r.contact_updated_at,
+      payout: {
+        bankAccountHolder: r.bank_account_holder,
+        bankName: r.bank_name,
+        bankIfsc: r.bank_ifsc,
+        bankAccountLast4: r.bank_account_last4,
+        upiId: r.upi_id,
+        updatedBy: r.payout_updated_by_scope,
+        updatedAt: r.payout_updated_at,
+      },
       memberSince: r.member_since,
       fleet: {
         qrPoints: parseInt(r.qr_points) || 0,
@@ -266,16 +316,22 @@ export class OrganizationService {
     return this.map(result.rows[0]);
   }
 
+  /**
+   * `scope` records who set the contact details. The platform's edit passes 'platform';
+   * a shop's own edit passes 'shop', so the platform can see the shop changed them.
+   */
   async update(
     id: string,
     params: {
       name?: string;
       businessModel?: BusinessModelId | null;
       timezone?: string;
-      contactEmail?: string;
-      contactPhone?: string;
+      /** null clears the field. */
+      contactEmail?: string | null;
+      contactPhone?: string | null;
       notes?: string;
-    }
+    },
+    scope: DetailsSource = 'platform'
   ): Promise<Organization> {
     const sets: string[] = [];
     const args: unknown[] = [id];
@@ -298,6 +354,11 @@ export class OrganizationService {
       return this.getById(id);
     }
 
+    if (params.contactEmail !== undefined || params.contactPhone !== undefined) {
+      assign('contact_updated_by_scope', scope);
+      sets.push('contact_updated_at = NOW()');
+    }
+
     sets.push('updated_at = NOW()');
 
     const result = await this.database.query<OrganizationRow>(
@@ -311,6 +372,36 @@ export class OrganizationService {
       throw new AppError('Organization not found', 404);
     }
 
+    return this.map(result.rows[0]);
+  }
+
+  /**
+   * Sets a shop's bank and UPI details. Fields left out are not touched; a field sent
+   * empty is cleared. `scope` records whether MPRNT or the shop entered them.
+   */
+  async updatePayout(id: string, input: PayoutInput, scope: DetailsSource): Promise<Organization> {
+    const sets: string[] = [];
+    const args: unknown[] = [id];
+
+    if (Object.values(input).every((v) => v === undefined)) {
+      return this.getById(id);
+    }
+
+    addPayoutAssignments(input, scope, args, sets);
+    sets.push('updated_at = NOW()');
+
+    const result = await this.database.query<OrganizationRow>(
+      `UPDATE organizations SET ${sets.join(', ')}
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING *`,
+      args
+    );
+
+    if (result.rows.length === 0) {
+      throw new AppError('Organization not found', 404);
+    }
+
+    logger.info('Shop payout details updated', { organizationId: id, scope });
     return this.map(result.rows[0]);
   }
 

@@ -1,6 +1,7 @@
 import Joi from 'joi';
 import { BUSINESS_MODEL_IDS } from '../types/businessModels';
 import { BUSINESS_TYPES, INDIAN_STATES } from '../services/onboardingRules';
+import { payoutFields } from './adminValidator';
 
 /**
  * Shape checks for the onboarding wizard. Formats (GSTIN, PAN, pincode, mobile)
@@ -74,6 +75,8 @@ export const draftPatchSchema = Joi.object({
       email: Joi.string().trim().email().max(255).allow('', null),
       phone: text(20),
     }).unknown(false),
+    // Optional: a shop can be created without bank or UPI details and add them later.
+    payout: Joi.object(payoutFields).unknown(false),
   })
     .unknown(false)
     .required(),

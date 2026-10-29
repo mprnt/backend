@@ -1,7 +1,18 @@
-import { Database, db } from '../config/database';
+import { Database, QueryResultRow, db } from '../config/database';
 import { AppError } from '../utils/errors';
 import { PrintSettings, PricingResult } from '../types/printJob';
 import logger from '../utils/logger';
+
+interface PriceListRow extends QueryResultRow {
+  id: string;
+  bw_per_page: string | number;
+  color_per_page: string | number;
+  min_charge: string | number;
+}
+
+interface KioskPriceListRow extends PriceListRow {
+  source: ResolvedPrices['source'];
+}
 
 export interface ResolvedPrices {
   bwPerPage: number;
@@ -29,9 +40,9 @@ export class PricingService {
    * `effective_from` has passed applies, so a future-dated price change sits
    * dormant until its moment.
    */
-  async resolvePrices(kioskId?: string): Promise<ResolvedPrices> {
+  async resolvePrices(kioskId?: string, organizationId?: string): Promise<ResolvedPrices> {
     if (kioskId) {
-      const result = await this.database.query(
+      const result = await this.database.query<KioskPriceListRow>(
         `SELECT pl.id, pl.bw_per_page, pl.color_per_page, pl.min_charge,
                 CASE
                   WHEN pl.kiosk_id IS NOT NULL        THEN 'kiosk'
@@ -65,7 +76,30 @@ export class PricingService {
       }
     }
 
-    const platform = await this.database.query(
+    // No QR point named: the shop's own standard rate, if it has set one. A customer's
+    // QR scan always names a point, so this is what the shop's dashboard shows as its price.
+    if (organizationId) {
+      const own = await this.database.query<PriceListRow>(
+        `SELECT id, bw_per_page, color_per_page, min_charge
+           FROM price_lists
+          WHERE organization_id = $1 AND kiosk_id IS NULL AND effective_from <= NOW()
+          ORDER BY effective_from DESC
+          LIMIT 1`,
+        [organizationId]
+      );
+      if (own.rows.length > 0) {
+        const r = own.rows[0];
+        return {
+          bwPerPage: Number(r.bw_per_page),
+          colorPerPage: Number(r.color_per_page),
+          minCharge: Number(r.min_charge),
+          source: 'organization',
+          priceListId: r.id,
+        };
+      }
+    }
+
+    const platform = await this.database.query<PriceListRow>(
       `SELECT id, bw_per_page, color_per_page, min_charge
          FROM price_lists
         WHERE organization_id IS NULL AND kiosk_id IS NULL AND effective_from <= NOW()
@@ -269,8 +303,8 @@ export class PricingService {
    * Rates for display, resolved for a specific kiosk when one is given. This is
    * what the QR frontend shows before the customer picks their settings.
    */
-  async getPricingInfo(kioskId?: string) {
-    const prices = await this.resolvePrices(kioskId);
+  async getPricingInfo(kioskId?: string, organizationId?: string) {
+    const prices = await this.resolvePrices(kioskId, organizationId);
 
     return {
       blackAndWhite: {
