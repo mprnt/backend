@@ -83,6 +83,21 @@ function forScreens(payload: DraftPayload): DraftPayload {
   return { ...payload, payout };
 }
 
+/** One draft in the list of partners being onboarded. */
+export interface DraftSummary {
+  id: string;
+  tradingName: string | null;
+  city: string | null;
+  ownerEmail: string | null;
+  qrCode: string | null;
+  steps: { business: boolean; qrPoint: boolean; owner: boolean; payout: boolean };
+  documents: number;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
 export interface DraftView {
   id: string;
   status: 'open' | 'completed' | 'expired';
@@ -155,6 +170,55 @@ export class OnboardingService {
       [actorId, String(DRAFT_LIFETIME_DAYS)]
     );
     return this.getDraft(result.rows[0].id);
+  }
+
+  /**
+   * Drafts still being filled in, most recently touched first: who is being onboarded,
+   * how far the wizard got, who started it, and when it lapses. Payout details are never
+   * part of this list.
+   */
+  async listOpenDrafts(): Promise<DraftSummary[]> {
+    const result = await this.database.query<{
+      id: string;
+      payload: DraftPayload | null;
+      created_at: Date;
+      updated_at: Date;
+      expires_at: Date;
+      created_by_email: string | null;
+      documents: string;
+    }>(
+      `SELECT d.id, d.payload, d.created_at, d.updated_at, d.expires_at,
+              au.email AS created_by_email,
+              (SELECT COUNT(*) FROM partner_documents pd
+                WHERE pd.draft_id = d.id AND pd.organization_id IS NULL) AS documents
+         FROM partner_onboarding_drafts d
+         LEFT JOIN admin_users au ON au.id = d.created_by
+        WHERE d.status = 'open' AND d.expires_at > NOW()
+        ORDER BY d.updated_at DESC
+        LIMIT 100`
+    );
+
+    return result.rows.map((r) => {
+      const p = r.payload ?? {};
+      return {
+        id: r.id,
+        tradingName: p.business?.tradingName?.trim() || null,
+        city: p.business?.city?.trim() || null,
+        ownerEmail: p.owner?.email?.trim() || null,
+        qrCode: p.qrPoint?.code?.trim() || null,
+        steps: {
+          business: Boolean(p.business?.tradingName && p.business?.city),
+          qrPoint: Boolean(p.qrPoint?.code),
+          owner: Boolean(p.owner?.email),
+          payout: Boolean(p.payout?.upiId || p.payout?.bankAccountLast4),
+        },
+        documents: parseInt(r.documents, 10) || 0,
+        createdBy: r.created_by_email,
+        createdAt: r.created_at.toISOString(),
+        updatedAt: r.updated_at.toISOString(),
+        expiresAt: r.expires_at.toISOString(),
+      };
+    });
   }
 
   async getDraft(id: string): Promise<DraftView> {

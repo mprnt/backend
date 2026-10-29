@@ -82,6 +82,7 @@ interface PollJobRow {
 
 interface CurrentQueueJobRow {
   status: string;
+  lease_count: number | null;
   printer_id: string | null;
   printed_pages: number | null;
   retry_count: number | null;
@@ -472,7 +473,7 @@ export class QueueService {
       await client.query('BEGIN');
 
       const current = await client.query<CurrentQueueJobRow>(
-        `SELECT pq.status, pq.printer_id, pq.printed_pages, pq.retry_count, pq.max_retries,
+        `SELECT pq.status, pq.lease_count, pq.printer_id, pq.printed_pages, pq.retry_count, pq.max_retries,
                 pj.total_pages, pj.copies
            FROM print_queue pq
            JOIN print_jobs pj ON pq.job_id = pj.id
@@ -498,15 +499,33 @@ export class QueueService {
         throw new AppError('This job is not assigned to your printer', 403);
       }
 
-      // A job that has permanently failed is final for the printer that failed it.
-      // The printer assignment is kept on final failure, so without this check a
-      // repeated `failed` report would be applied again and keep bumping retry_count.
-      if (row.status === 'failed' && params.status === 'failed') {
+      // A permanently failed job is final whatever the printer reports next. The
+      // printer keeps the assignment on final failure, so without this check a
+      // later `completed` would flip the job, and a repeated `failed` would bump
+      // retry_count again.
+      if (row.status === 'failed') {
         await client.query('COMMIT');
-        logger.debug('Ignoring repeated failure report for permanently failed job', {
+        logger.debug('Ignoring report for permanently failed job', {
           jobId: params.jobId,
+          reported: params.status,
         });
         return { applied: false, status: 'failed' };
+      }
+
+      // A report for an earlier attempt (the job was reclaimed and handed out
+      // again, possibly to this same printer) must not change the current attempt.
+      if (params.attempt !== undefined && params.attempt !== row.lease_count) {
+        await client.query('ROLLBACK');
+        logger.warn('Rejected status report for a stale attempt', {
+          jobId: params.jobId,
+          reportedAttempt: params.attempt,
+          currentAttempt: row.lease_count,
+        });
+        throw new AppError(
+          'This report is for an earlier attempt of the job and has been rejected',
+          409,
+          'STALE_ATTEMPT'
+        );
       }
 
       // Idempotency: a completed or cancelled job is final.

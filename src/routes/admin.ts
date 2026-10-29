@@ -504,6 +504,12 @@ router.post(
 // Partner onboarding. The whole wizard is platform-only: a shop cannot create
 // itself, and a partner's documents are read only by a super admin.
 // ---------------------------------------------------------------------------
+router.get(
+  '/onboarding/drafts',
+  requireSuperAdmin,
+  requirePermission(PERMISSIONS.ORGS_READ),
+  h(onboardingController.listDrafts.bind(onboardingController))
+);
 router.post(
   '/onboarding/drafts',
   requireSuperAdmin,

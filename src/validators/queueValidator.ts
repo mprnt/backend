@@ -105,6 +105,8 @@ export const updateJobStatusSchema = Joi.object({
   // Accepted for the printer's own bookkeeping and correlation; the server
   // timestamps authoritatively.
   timestamp: Joi.string().isoDate().optional(),
+  // The `attempt` value from the poll response this report is for.
+  attempt: Joi.number().integer().min(1).optional(),
 }).when(Joi.object({ status: Joi.valid('failed').required() }).unknown(), {
   then: Joi.object({
     errorCode: Joi.required().messages({
