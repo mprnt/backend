@@ -498,6 +498,17 @@ export class QueueService {
         throw new AppError('This job is not assigned to your printer', 403);
       }
 
+      // A job that has permanently failed is final for the printer that failed it.
+      // The printer assignment is kept on final failure, so without this check a
+      // repeated `failed` report would be applied again and keep bumping retry_count.
+      if (row.status === 'failed' && params.status === 'failed') {
+        await client.query('COMMIT');
+        logger.debug('Ignoring repeated failure report for permanently failed job', {
+          jobId: params.jobId,
+        });
+        return { applied: false, status: 'failed' };
+      }
+
       // Idempotency: a completed or cancelled job is final.
       if (TERMINAL_STATUSES.includes(row.status)) {
         await client.query('COMMIT');
