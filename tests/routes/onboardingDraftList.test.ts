@@ -33,6 +33,10 @@ describe('GET /admin/onboarding/drafts - partners still being onboarded', () => 
 
     expect(res.status).toBe(200);
     expect(db.sqlFor('FROM partner_onboarding_drafts d')[0].sql).toContain("d.status = 'open'");
+    // A draft that was only opened, never filled in, is left out.
+    expect(db.sqlFor('FROM partner_onboarding_drafts d')[0].sql).toContain(
+      "d.payload <> '{}'::jsonb"
+    );
     expect(res.body.data.drafts[0]).toEqual({
       id: 'd-1',
       tradingName: 'Sharma Stores',

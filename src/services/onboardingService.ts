@@ -194,6 +194,8 @@ export class OnboardingService {
          FROM partner_onboarding_drafts d
          LEFT JOIN admin_users au ON au.id = d.created_by
         WHERE d.status = 'open' AND d.expires_at > NOW()
+          -- A draft nobody has filled in yet (the form was only opened) is not a partner being onboarded.
+          AND d.payload <> '{}'::jsonb
         ORDER BY d.updated_at DESC
         LIMIT 100`
     );
