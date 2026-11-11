@@ -65,6 +65,7 @@ export type PrintErrorCode =
   | 'CUPS_ERROR'
   | 'TIMEOUT'
   | 'LEASE_EXPIRED'
+  | 'PRINT_WINDOW_EXPIRED'
   | 'UNKNOWN';
 
 /** Statuses a printer is allowed to report. A printer can never set 'queued'. */
@@ -75,7 +76,8 @@ export interface UpdateJobStatusParams {
   status: ReportableJobStatus;
   errorMessage?: string;
   errorCode?: PrintErrorCode;
-  printedPages?: number;
+  /** null = unknown; the backend does not guess a page count. */
+  printedPages?: number | null;
   /**
    * The `attempt` from the poll response this report belongs to. Optional for
    * older printers; when present, a report for any other attempt is rejected.
@@ -112,4 +114,19 @@ export interface JobAssignment {
   leaseExpiresAt: string;
   /** 1 on the first attempt; higher after a retry. */
   attempt: number;
+  /**
+   * Fixed for the life of the job: paid_at + print window, stored at payment
+   * capture. Unchanged by lease renewals, resumes or new attempts. At or after
+   * this instant the job is failed with PRINT_WINDOW_EXPIRED.
+   */
+  printDeadlineAt: string;
+}
+
+export interface UpdateJobStatusResult {
+  applied: boolean;
+  status: string;
+  /** True once the job is no longer held by the reporting printer. */
+  printerReleased: boolean;
+  /** Jobs this call expired (for websocket broadcast after commit). */
+  expiredJobIds?: string[];
 }

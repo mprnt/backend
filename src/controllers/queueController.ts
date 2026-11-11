@@ -3,6 +3,8 @@ import { ParamsDictionary } from 'express-serve-static-core';
 import { queueService } from '../services/queueService';
 import { printerAuthService } from '../services/printerAuthService';
 import { fleetService } from '../services/fleetService';
+import { physicalOutcomeService } from '../services/physicalOutcomeService';
+import { AppError } from '../utils/errors';
 import { auditService } from '../services/auditService';
 import { PrinterCapabilities, PrinterHeartbeat, UpdateJobStatusParams } from '../types/queue';
 import logger from '../utils/logger';
@@ -33,6 +35,12 @@ type UpdateJobStatusBody = Pick<
   UpdateJobStatusParams,
   'status' | 'errorMessage' | 'errorCode' | 'printedPages' | 'attempt'
 >;
+
+interface JobEvidenceBody {
+  attempt: number;
+  outcome?: string;
+  evidence: { cupsJobId: string; cupsState: string };
+}
 
 class QueueController {
   /**
@@ -200,6 +208,47 @@ class QueueController {
         jobId,
         status: result.status,
         applied: result.applied,
+        // True once this printer no longer holds the job: the Pi may then resume
+        // unrelated work, after its own local physical-safety check.
+        printerReleased: result.printerReleased,
+      },
+    });
+  }
+
+  /**
+   * POST /api/v1/queue/jobs/:jobId/evidence
+   * What CUPS reported for an attempt this printer held. Evidence only: it never
+   * changes the physical outcome, and it never changes assignment release.
+   */
+  async recordEvidence(req: RequestWithBody<JobEvidenceBody>, res: Response): Promise<void> {
+    const printer = req.printer!;
+    const { jobId } = req.params;
+    const { attempt, outcome, evidence } = req.body;
+
+    if (outcome !== undefined && outcome !== 'unknown') {
+      throw new AppError(
+        'A printer cannot record the physical outcome. Send evidence only; an operator records the outcome.',
+        400,
+        'PHYSICAL_OUTCOME_NOT_PRINTER_SETTABLE'
+      );
+    }
+
+    const result = await physicalOutcomeService.recordEvidence({
+      jobId,
+      printerUuid: printer.id,
+      attempt,
+      cupsJobId: evidence.cupsJobId,
+      cupsState: evidence.cupsState,
+    });
+
+    res.json({
+      status: 'success',
+      message: result.applied ? 'Evidence recorded' : 'Evidence already recorded',
+      data: {
+        jobId,
+        attempt,
+        applied: result.applied,
+        physicalOutcome: result.physicalOutcome,
       },
     });
   }

@@ -163,7 +163,9 @@ describe('PaymentService', () => {
       // Money is still recorded (committed) so the job can be refunded.
       expect(db.sqlFor('INSERT INTO payment_transactions')).toHaveLength(1);
       expect(db.sqlFor('COMMIT')).toHaveLength(1);
-      const mark = db.sqlFor("payment_status = 'paid', paid_at = NOW(), error_message");
+      const mark = db.sqlFor(
+        'print_deadline_at = NOW() + make_interval(mins => 15), error_message'
+      );
       expect(mark).toHaveLength(1);
     });
 
@@ -212,7 +214,9 @@ describe('PaymentService', () => {
       expect(enqueue).not.toHaveBeenCalled();
       // The money is recorded and the job marked paid, so it shows as a refund candidate.
       expect(db.sqlFor('INSERT INTO payment_transactions')).toHaveLength(1);
-      expect(db.sqlFor("payment_status = 'paid', paid_at = NOW(), error_message")).toHaveLength(1);
+      expect(
+        db.sqlFor('print_deadline_at = NOW() + make_interval(mins => 15), error_message')
+      ).toHaveLength(1);
       expect(db.sqlFor('COMMIT')).toHaveLength(1);
     });
 

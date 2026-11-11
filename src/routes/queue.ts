@@ -11,6 +11,7 @@ import {
   heartbeatSchema,
   pollQueueSchema,
   updateJobStatusSchema,
+  jobEvidenceSchema,
   jobIdParamSchema,
 } from '../validators/queueValidator';
 
@@ -154,6 +155,30 @@ router.post(
   validate(jobIdParamSchema, 'params'),
   validate(updateJobStatusSchema, 'body'),
   asyncHandler(queueController.updateJobStatus.bind(queueController))
+);
+
+/**
+ * @swagger
+ * /queue/jobs/{jobId}/evidence:
+ *   post:
+ *     summary: Attach CUPS evidence for an attempt this printer held
+ *     description: |
+ *       Evidence is stored and never changes the physical outcome. Only an operator
+ *       can record the outcome. Send `outcome: "unknown"` or omit it; any other value
+ *       is refused with 400 PHYSICAL_OUTCOME_NOT_PRINTER_SETTABLE.
+ *     tags: [Printer API]
+ *     responses:
+ *       200: { description: Evidence recorded (applied true) or already recorded (applied false) }
+ *       403: { description: This job was never assigned to this printer (JOB_NOT_ASSIGNED) }
+ *       409: { description: The attempt belongs to another printer (STALE_ATTEMPT) }
+ */
+router.post(
+  '/jobs/:jobId/evidence',
+  printerRateLimiter,
+  asyncHandler(authenticatePrinter),
+  validate(jobIdParamSchema, 'params'),
+  validate(jobEvidenceSchema, 'body'),
+  asyncHandler(queueController.recordEvidence.bind(queueController))
 );
 
 /**

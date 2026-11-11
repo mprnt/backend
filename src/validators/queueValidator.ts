@@ -86,7 +86,8 @@ export const updateJobStatusSchema = Joi.object({
     'any.required': 'Status is required',
     'any.only': 'A printer may only report: printing, completed, failed, cancelled',
   }),
-  printedPages: Joi.number().integer().min(0).max(10000).optional(),
+  // null means unknown. The backend never guesses a page count.
+  printedPages: Joi.number().integer().min(0).max(10000).optional().allow(null),
   errorMessage: Joi.string().max(1000).optional().allow(null, ''),
   errorCode: Joi.string()
     .valid(
@@ -98,6 +99,7 @@ export const updateJobStatusSchema = Joi.object({
       'UNSUPPORTED_DOCUMENT',
       'CUPS_ERROR',
       'TIMEOUT',
+      'PRINT_WINDOW_EXPIRED',
       'UNKNOWN'
     )
     .optional()
@@ -113,4 +115,24 @@ export const updateJobStatusSchema = Joi.object({
       'any.required': 'errorCode is required when reporting a failure',
     }),
   }),
+});
+
+/**
+ * Printer evidence: what CUPS reported for one attempt. It is stored and never
+ * changes the physical outcome. Only an operator can change that.
+ */
+export const jobEvidenceSchema = Joi.object({
+  attempt: Joi.number().integer().min(1).required().messages({
+    'any.required': 'attempt is required: the attempt this evidence belongs to',
+  }),
+  // Optional, so that a Pi which sends it gets a clear refusal rather than a silent drop.
+  // Only 'unknown' is accepted, and the controller enforces that.
+  outcome: Joi.string().max(20).optional(),
+  evidence: Joi.object({
+    cupsJobId: Joi.string().trim().min(1).max(200).required(),
+    cupsState: Joi.string().trim().min(1).max(50).required(),
+  })
+    .required()
+    .messages({ 'any.required': 'evidence is required' }),
+  timestamp: Joi.string().isoDate().optional(),
 });

@@ -31,7 +31,7 @@ describe('repeated failed reports', () => {
       printerUuid: PRINTER,
     });
 
-    expect(result).toEqual({ applied: false, status: 'failed' });
+    expect(result).toEqual({ applied: false, status: 'failed', printerReleased: true });
     expect(db.sqlFor('UPDATE print_queue')).toHaveLength(0);
     expect(db.sqlFor('UPDATE print_jobs')).toHaveLength(0);
   });
@@ -47,7 +47,7 @@ describe('repeated failed reports', () => {
       printerUuid: PRINTER,
     });
 
-    expect(result).toEqual({ applied: true, status: 'queued' });
+    expect(result).toEqual({ applied: true, status: 'queued', printerReleased: true });
     // The requeue touches the queue row and the job row.
     expect(db.sqlFor("status = 'queued'")).toHaveLength(2);
   });
@@ -63,7 +63,7 @@ describe('repeated failed reports', () => {
       printerUuid: PRINTER,
     });
 
-    expect(result).toEqual({ applied: false, status: 'failed' });
+    expect(result).toEqual({ applied: false, status: 'failed', printerReleased: true });
     expect(db.sqlFor('UPDATE print_queue')).toHaveLength(0);
     expect(db.sqlFor('UPDATE print_jobs')).toHaveLength(0);
   });
@@ -98,7 +98,7 @@ describe('repeated failed reports', () => {
       printerUuid: PRINTER,
     });
 
-    expect(result).toEqual({ applied: true, status: 'printing' });
+    expect(result).toEqual({ applied: true, status: 'printing', printerReleased: false });
   });
 
   it('still applies reports without an attempt (older printers)', async () => {
@@ -111,6 +111,6 @@ describe('repeated failed reports', () => {
       printerUuid: PRINTER,
     });
 
-    expect(result).toEqual({ applied: true, status: 'printing' });
+    expect(result).toEqual({ applied: true, status: 'printing', printerReleased: false });
   });
 });
