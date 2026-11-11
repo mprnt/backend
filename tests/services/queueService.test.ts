@@ -101,7 +101,7 @@ describe('QueueService', () => {
         printerUuid: heldBy,
       });
 
-      expect(res).toEqual({ applied: false, status: 'completed' });
+      expect(res).toEqual({ applied: false, status: 'completed', printerReleased: true });
       expect(client.sqlFor('UPDATE print_queue SET')).toHaveLength(0);
     });
 
@@ -215,6 +215,8 @@ describe('QueueService', () => {
       orientation: 'portrait',
       // Charged pages across both copies; the printer is told 10 per copy.
       total_pages: 20,
+      // Fixed at payment: paid_at + 15 minutes. Unchanged by lease or attempt.
+      print_deadline_at: new Date(Date.now() + 15 * 60 * 1000),
       s3_key: 'documents/abc.pdf',
       original_filename: 'report.pdf',
       file_size_bytes: '204800',
@@ -223,6 +225,10 @@ describe('QueueService', () => {
 
     it('returns null when the queue is empty', async () => {
       client.query
+        // Lazy expiry runs first: BEGIN, expire (nothing due), COMMIT.
+        .mockResolvedValueOnce(result([])) // expiry BEGIN
+        .mockResolvedValueOnce(result([])) // expiry UPDATE
+        .mockResolvedValueOnce(result([])) // expiry COMMIT
         .mockResolvedValueOnce(result([])) // BEGIN
         .mockResolvedValueOnce(result([printerRow])) // printer lookup
         .mockResolvedValueOnce(result([])) // in-flight check
@@ -239,6 +245,10 @@ describe('QueueService', () => {
 
     it('claims a job with a lease and returns a signed document URL', async () => {
       client.query
+        // Lazy expiry first: BEGIN, expire (nothing due), COMMIT.
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([printerRow]))
         .mockResolvedValueOnce(result([]))
@@ -265,6 +275,10 @@ describe('QueueService', () => {
 
     it('matches on capabilities read from the database, not from the request body', async () => {
       client.query
+        // Lazy expiry first: BEGIN, expire (nothing due), COMMIT.
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([printerRow])) // supports_color = false
         .mockResolvedValueOnce(result([]))
@@ -283,6 +297,10 @@ describe('QueueService', () => {
 
     it('only ever hands out jobs that were paid for', async () => {
       client.query
+        // Lazy expiry first: BEGIN, expire (nothing due), COMMIT.
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([printerRow]))
         .mockResolvedValueOnce(result([]))
@@ -301,6 +319,10 @@ describe('QueueService', () => {
 
     it('re-hands the same job to a printer that restarted mid-print', async () => {
       client.query
+        // Lazy expiry first: BEGIN, expire (nothing due), COMMIT.
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([printerRow]))
         .mockResolvedValueOnce(result([{ job_id: 'job-in-flight' }]))
@@ -321,6 +343,10 @@ describe('QueueService', () => {
 
     it('gives no work to a printer in maintenance', async () => {
       client.query
+        // Lazy expiry first: BEGIN, expire (nothing due), COMMIT.
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
+        .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([]))
         .mockResolvedValueOnce(result([{ ...printerRow, status: 'maintenance' }]));
 

@@ -11,7 +11,7 @@ const PRINTER = '7d00a3fe-55f5-4dc5-9fce-cb0ed84ee0ab';
 
 describe('print window: a paid job prints within the window or not at all', () => {
   describe('polling', () => {
-    it('only offers queued jobs whose paid_at is inside the window', async () => {
+    it('only offers queued jobs whose stored deadline has not passed', async () => {
       const db = scriptedDb([
         [
           'FROM printers',
@@ -41,14 +41,16 @@ describe('print window: a paid job prints within the window or not at all', () =
         },
       });
 
-      const jobQuery = db.sqlFor('AND pj.paid_at >')[0];
-      expect(jobQuery.sql).toContain('make_interval(mins => 15)');
+      // The candidate filter uses the deadline stored on the job, not paid_at.
+      const jobQuery = db.sqlFor('AND pj.print_deadline_at > NOW()')[0];
+      expect(jobQuery).toBeDefined();
       expect(jobQuery.sql).toContain("pq.status = 'queued'");
+      expect(db.sqlFor('paid_at >')).toHaveLength(0);
     });
   });
 
   describe('expireOutOfWindow', () => {
-    it('fails queued and assigned jobs whose window has closed, and never printing ones', async () => {
+    it('fails queued, assigned and printing jobs whose deadline has passed', async () => {
       const db = scriptedDb([
         ['UPDATE print_queue pq SET', [{ job_id: 'job-old' }]],
         ['UPDATE print_jobs SET status', []],
@@ -59,10 +61,10 @@ describe('print window: a paid job prints within the window or not at all', () =
 
       expect(count).toBe(1);
       const sql = db.sqlFor('UPDATE print_queue pq SET')[0].sql;
-      expect(sql).toContain("pq.status IN ('queued', 'assigned')");
-      expect(sql).toContain("error_code = 'PRINT_WINDOW_EXPIRED'");
-      expect(sql).toContain('pj.paid_at < NOW() - make_interval(mins => 15)');
-      expect(sql).not.toContain("'printing'");
+      expect(sql).toContain("pq.status IN ('queued', 'assigned', 'printing')");
+      expect(sql).toMatch(/error_code\s*=\s*'PRINT_WINDOW_EXPIRED'/);
+      expect(sql).toContain('pj.print_deadline_at <= NOW()');
+      expect(sql).not.toContain('paid_at');
       // The job is failed, but its payment stays 'paid' so it is flagged for refund.
       const jobSql = db.sqlFor('UPDATE print_jobs SET status')[0];
       expect(jobSql.sql).toContain("status = 'failed'");

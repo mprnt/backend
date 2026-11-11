@@ -13,6 +13,9 @@ import {
 import { asyncHandler } from '../utils/asyncHandler';
 import { leadController } from '../controllers/leadController';
 import { refundController } from '../controllers/refundController';
+import { physicalOutcomeController } from '../controllers/physicalOutcomeController';
+import { jobIdParamSchema } from '../validators/queueValidator';
+import { operatorOutcomeSchema } from '../validators/physicalOutcomeValidator';
 import { revenueSplitController } from '../controllers/revenueSplitController';
 import { billingController } from '../controllers/billingController';
 import { onboardingController } from '../controllers/onboardingController';
@@ -590,6 +593,25 @@ router.post(
   validate(refundJobParamsSchema, 'params'),
   validate(refundJobBodySchema),
   h(refundController.refundJob.bind(refundController))
+);
+
+// ---------------------------------------------------------------------------
+// Physical outcome — what came out of the printer, recorded by an operator
+// after checking the output. The printer's CUPS evidence is shown here but
+// never decides it. Platform scope only.
+// ---------------------------------------------------------------------------
+router.get(
+  '/print-jobs/:jobId/physical-outcome',
+  requireSuperAdmin,
+  validate(jobIdParamSchema, 'params'),
+  h(physicalOutcomeController.getForOperator.bind(physicalOutcomeController))
+);
+router.post(
+  '/print-jobs/:jobId/physical-outcome',
+  requireSuperAdmin,
+  validate(jobIdParamSchema, 'params'),
+  validate(operatorOutcomeSchema),
+  h(physicalOutcomeController.recordOutcome.bind(physicalOutcomeController))
 );
 
 // Kept for symmetry with requireTenant's intended use in future endpoints that

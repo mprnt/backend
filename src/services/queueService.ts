@@ -1,4 +1,4 @@
-import { Database, db } from '../config/database';
+import { Database, PoolClient, db } from '../config/database';
 import { AppError } from '../utils/errors';
 import {
   Printer,
@@ -6,6 +6,7 @@ import {
   JobAssignment,
   PollQueueParams,
   UpdateJobStatusParams,
+  UpdateJobStatusResult,
   PrinterCapabilities,
 } from '../types/queue';
 import env from '../config/environment';
@@ -19,13 +20,20 @@ import { websocketService } from './websocketService';
  */
 const TERMINAL_STATUSES = ['completed', 'cancelled'];
 
+/** A job in one of these is no longer assigned to any printer's active work. */
+const FINAL_STATUSES = ['completed', 'failed', 'cancelled'];
+
+/** Customer-facing reason when the print window closes. */
+const EXPIRED_MESSAGE =
+  'We could not print your job within the print window. Please show this screen to shop staff for a refund.';
+
 /**
  * print_jobs.total_pages is the charged count, which already includes copies
  * (pricingService: physical pages x copies). The printer contract speaks in
  * pages per copy, so divide back rather than multiplying by copies again.
  */
 /** The print window in whole minutes. Interpolated into SQL, so it must be an integer. */
-function printWindowMinutes(): number {
+export function printWindowMinutes(): number {
   return Math.max(1, Math.trunc(env.printer.print_window_minutes));
 }
 
@@ -74,6 +82,7 @@ interface PollJobRow {
   paper_size: string;
   orientation: string;
   total_pages: number | null;
+  print_deadline_at: Date;
   s3_key: string;
   original_filename: string;
   file_size_bytes: number | string;
@@ -84,11 +93,14 @@ interface CurrentQueueJobRow {
   status: string;
   lease_count: number | null;
   printer_id: string | null;
+  last_printer_id: string | null;
   printed_pages: number | null;
   retry_count: number | null;
   max_retries: number;
   total_pages: number | null;
   copies: number | null;
+  /** Computed by the database so the comparison uses the same clock as every other path. */
+  deadline_passed: boolean;
 }
 
 interface ReclaimedJobRow {
@@ -299,6 +311,10 @@ export class QueueService {
   async pollQueue(
     params: PollQueueParams & { printerUuid: string }
   ): Promise<JobAssignment | null> {
+    // A job this printer holds past its deadline is failed now, before anything
+    // else. It is never handed back, even if the sweep has not run yet.
+    await this.runExpiry('pq.printer_id = $2', [params.printerUuid]);
+
     const client = await this.database.getClient();
 
     try {
@@ -342,6 +358,7 @@ export class QueueService {
         `SELECT pq.job_id, pq.priority, pq.lease_count,
                 pj.color_mode, pj.copies, pj.page_range, pj.custom_range,
                 pj.print_sides, pj.paper_size, pj.orientation, pj.total_pages,
+                pj.print_deadline_at,
                 d.s3_key, d.original_filename, d.file_size_bytes, d.file_type
            FROM print_queue pq
            JOIN print_jobs pj ON pq.job_id = pj.id
@@ -350,10 +367,9 @@ export class QueueService {
             AND pj.kiosk_id = $1
             AND pj.payment_status = 'paid'
             AND pq.retry_count < pq.max_retries
-            -- Never hand out a job whose print window has closed. Its refund is
-            -- already flagged, and a stale job must not print for a customer who
-            -- has left. The window is an integer from config, not request data.
-            AND pj.paid_at > NOW() - make_interval(mins => ${printWindowMinutes()})
+            -- Never hand out a job at or past its fixed deadline. The deadline is
+            -- stored on the job at payment; it does not move with leases or attempts.
+            AND pj.print_deadline_at > NOW()
             AND (pj.color_mode <> 'color'  OR $2 = true)
             AND (pj.print_sides <> 'double' OR $3 = true)
           ORDER BY pq.priority DESC, pq.queued_at ASC
@@ -398,6 +414,15 @@ export class QueueService {
         [job.job_id]
       );
 
+      // Attempt history: one row per claim, so a later report can be checked
+      // against the printer that actually held that attempt.
+      await client.query(
+        `INSERT INTO print_attempts (job_id, attempt, printer_id, assigned_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (job_id, attempt) DO NOTHING`,
+        [job.job_id, job.lease_count + 1, printer.id]
+      );
+
       await client.query('COMMIT');
 
       // Pre-signed URL is generated after commit: it is not transactional state,
@@ -429,6 +454,7 @@ export class QueueService {
         assignedAt: new Date(),
         leaseExpiresAt: new Date(Date.now() + env.printer.job_lease_seconds * 1000).toISOString(),
         attempt: job.lease_count + 1,
+        printDeadlineAt: new Date(job.print_deadline_at).toISOString(),
       };
 
       logger.info('Job claimed by printer', {
@@ -455,10 +481,12 @@ export class QueueService {
    * Apply a status update reported by a printer.
    *
    * Guarantees:
-   *  - a printer may only update a job it currently holds (ownership check);
+   *  - a printer may only update a job it currently holds; a former holder gets
+   *    an idempotent terminal answer with `printerReleased: true`;
+   *  - a job at or past its deadline is failed first, so no report can renew it;
+   *  - an expiry report before the deadline is refused without changing the job;
    *  - a job already in a terminal state is left alone (idempotent retries);
-   *  - `printedPages` only ever moves forward, so out-of-order arrivals from a
-   *    retrying Pi cannot walk the progress bar backwards;
+   *  - `printedPages` only ever moves forward, and `null` means "unknown";
    *  - `started_at` is stamped once, not on every `printing` message.
    *
    * @param printerUuid when present, the update is scoped to that printer.
@@ -466,15 +494,26 @@ export class QueueService {
    */
   async updateJobStatus(
     params: UpdateJobStatusParams & { printerUuid?: string }
-  ): Promise<{ applied: boolean; status: string }> {
+  ): Promise<UpdateJobStatusResult> {
+    const result = await this.applyStatusUpdate(params);
+    // Broadcast only after the transaction has committed.
+    this.broadcastExpired(result.expiredJobIds ?? []);
+    return result;
+  }
+
+  private async applyStatusUpdate(
+    params: UpdateJobStatusParams & { printerUuid?: string }
+  ): Promise<UpdateJobStatusResult> {
     const client = await this.database.getClient();
 
     try {
       await client.query('BEGIN');
 
       const current = await client.query<CurrentQueueJobRow>(
-        `SELECT pq.status, pq.lease_count, pq.printer_id, pq.printed_pages, pq.retry_count, pq.max_retries,
-                pj.total_pages, pj.copies
+        `SELECT pq.status, pq.lease_count, pq.printer_id, pq.last_printer_id,
+                pq.printed_pages, pq.retry_count, pq.max_retries,
+                pj.total_pages, pj.copies,
+                (pj.print_deadline_at <= NOW()) AS deadline_passed
            FROM print_queue pq
            JOIN print_jobs pj ON pq.job_id = pj.id
           WHERE pq.job_id = $1
@@ -487,35 +526,70 @@ export class QueueService {
       }
 
       const row = current.rows[0];
+      const caller = params.printerUuid;
+      const isFinal = FINAL_STATUSES.includes(row.status);
+      const holds = caller !== undefined && row.printer_id === caller;
+      const formerHolder =
+        caller !== undefined && !holds && isFinal && row.last_printer_id === caller;
+      const isExpiryReport =
+        params.status === 'failed' && params.errorCode === 'PRINT_WINDOW_EXPIRED';
 
-      // Ownership: reject a report about a job this printer does not hold.
-      if (params.printerUuid && row.printer_id !== params.printerUuid) {
-        await client.query('ROLLBACK');
+      // Ownership. A printer that does not hold the job, and was not the last
+      // holder of a finished one, is refused. An earlier attempt of its own gets
+      // STALE_ATTEMPT so it knows the job moved on, not that it was never its job.
+      if (caller !== undefined && !holds && !formerHolder) {
+        if (params.attempt !== undefined) {
+          const earlier = await client.query(
+            `SELECT 1 FROM print_attempts
+              WHERE job_id = $1 AND attempt = $2 AND printer_id = $3`,
+            [params.jobId, params.attempt, caller]
+          );
+          if (earlier.rows.length > 0) {
+            logger.warn('Rejected report for an earlier attempt this printer held', {
+              jobId: params.jobId,
+              reportedAttempt: params.attempt,
+              currentAttempt: row.lease_count,
+            });
+            throw new AppError(
+              'This report is for an earlier attempt of the job and has been rejected',
+              409,
+              'STALE_ATTEMPT'
+            );
+          }
+        }
         logger.warn('Printer reported status for a job it does not hold', {
           jobId: params.jobId,
-          reportedBy: params.printerUuid,
-          heldBy: row.printer_id,
+          reportedBy: caller,
         });
-        throw new AppError('This job is not assigned to your printer', 403);
+        throw new AppError('This job is not assigned to your printer', 403, 'JOB_NOT_ASSIGNED');
       }
 
-      // A permanently failed job is final whatever the printer reports next. The
-      // printer keeps the assignment on final failure, so without this check a
-      // later `completed` would flip the job, and a repeated `failed` would bump
-      // retry_count again.
+      // Former holder of a finished job: the same answer every time, and the
+      // printer is released. A stale attempt is still refused.
+      if (formerHolder) {
+        if (params.attempt !== undefined && params.attempt !== row.lease_count) {
+          throw new AppError(
+            'This report is for an earlier attempt of the job and has been rejected',
+            409,
+            'STALE_ATTEMPT'
+          );
+        }
+        await client.query('COMMIT');
+        return { applied: false, status: row.status, printerReleased: true };
+      }
+
+      // A permanently failed job is final whatever the printer reports next.
       if (row.status === 'failed') {
         await client.query('COMMIT');
         logger.debug('Ignoring report for permanently failed job', {
           jobId: params.jobId,
           reported: params.status,
         });
-        return { applied: false, status: 'failed' };
+        return { applied: false, status: 'failed', printerReleased: true };
       }
 
-      // A report for an earlier attempt (the job was reclaimed and handed out
-      // again, possibly to this same printer) must not change the current attempt.
+      // A report for an earlier attempt must not change the current attempt.
       if (params.attempt !== undefined && params.attempt !== row.lease_count) {
-        await client.query('ROLLBACK');
         logger.warn('Rejected status report for a stale attempt', {
           jobId: params.jobId,
           reportedAttempt: params.attempt,
@@ -536,14 +610,41 @@ export class QueueService {
           current: row.status,
           reported: params.status,
         });
-        return { applied: false, status: row.status };
+        return { applied: false, status: row.status, printerReleased: true };
+      }
+
+      // The deadline is checked before anything renews the lease. At or after it,
+      // the job fails now and the printer is released; the report is not applied.
+      if (row.deadline_passed) {
+        const expiredJobIds = await this.expireDueJobs(client, 'pq.job_id = $2', [params.jobId]);
+        await client.query('COMMIT');
+        logger.warn('Report arrived after the print deadline; job expired', {
+          jobId: params.jobId,
+          reported: params.status,
+        });
+        return {
+          applied: isExpiryReport,
+          status: 'failed',
+          printerReleased: true,
+          expiredJobIds,
+        };
+      }
+
+      // An expiry report before the deadline is refused, and the assignment stays.
+      if (isExpiryReport) {
+        throw new AppError(
+          'The print deadline has not passed yet; the job is still assigned to your printer',
+          409,
+          'DEADLINE_NOT_REACHED'
+        );
       }
 
       // Progress only moves forward, and never past the real page count.
       // total_pages already counts every copy (it is what the customer paid for).
+      // A null printedPages means unknown: keep what is recorded.
       const maxPages = row.total_pages || 0;
       const printedPages =
-        params.printedPages !== undefined
+        params.printedPages != null
           ? Math.min(Math.max(params.printedPages, row.printed_pages || 0), maxPages)
           : row.printed_pages;
 
@@ -600,6 +701,15 @@ export class QueueService {
 
       let finalStatus: string = params.status;
 
+      // Record the last holder whenever the job reaches a final state, so a later
+      // report from that printer gets the release answer.
+      if (params.status === 'completed' || params.status === 'cancelled') {
+        await client.query(
+          `UPDATE print_queue SET last_printer_id = printer_id WHERE job_id = $1`,
+          [params.jobId]
+        );
+      }
+
       // Failure handling: requeue while retries remain, otherwise fail for good.
       if (params.status === 'failed') {
         const retriesUsed = (row.retry_count || 0) + 1;
@@ -627,6 +737,11 @@ export class QueueService {
             maxRetries: row.max_retries,
           });
         } else {
+          // The printer keeps the assignment on final failure, and is recorded as the last holder.
+          await client.query(
+            `UPDATE print_queue SET last_printer_id = printer_id WHERE job_id = $1`,
+            [params.jobId]
+          );
           await client.query(`UPDATE print_jobs SET status = 'failed' WHERE id = $1`, [
             params.jobId,
           ]);
@@ -647,7 +762,12 @@ export class QueueService {
         printedPages,
       });
 
-      return { applied: true, status: finalStatus };
+      return {
+        applied: true,
+        status: finalStatus,
+        // Released once the job is no longer active on this printer.
+        printerReleased: finalStatus !== 'printing',
+      };
     } catch (error) {
       await client.query('ROLLBACK');
       if (!(error instanceof AppError)) {
@@ -664,16 +784,91 @@ export class QueueService {
   // -------------------------------------------------------------------------
 
   /**
+   * Fail active jobs whose deadline has passed, inside the caller's transaction.
+   *
+   * The job keeps its row and history. The printer is released through
+   * last_printer_id, and nothing can requeue the job. Only the job's own rows are
+   * touched, so the caller's scope (`scopeSql`, using $2 for its first value)
+   * decides which jobs are included.
+   */
+  private async expireDueJobs(
+    client: PoolClient,
+    scopeSql: string,
+    scopeParams: unknown[]
+  ): Promise<string[]> {
+    const result = await client.query<{ job_id: string }>(
+      `UPDATE print_queue pq SET
+         status           = 'failed',
+         last_printer_id  = COALESCE(pq.printer_id, pq.last_printer_id),
+         printer_id       = NULL,
+         assigned_at      = NULL,
+         lease_expires_at = NULL,
+         error_code       = 'PRINT_WINDOW_EXPIRED',
+         error_message    = $1,
+         failed_at        = NOW(),
+         updated_at       = NOW()
+       FROM print_jobs pj
+       WHERE pj.id = pq.job_id
+         AND pq.status IN ('queued', 'assigned', 'printing')
+         AND pj.print_deadline_at <= NOW()
+         AND ${scopeSql}
+       RETURNING pq.job_id`,
+      [EXPIRED_MESSAGE, ...scopeParams]
+    );
+
+    const ids = result.rows.map((r) => r.job_id);
+    if (ids.length === 0) return ids;
+
+    await client.query(
+      `UPDATE print_jobs SET status = 'failed',
+              error_message = 'Not printed within the print window; refund required'
+        WHERE id = ANY($1::uuid[])`,
+      [ids]
+    );
+    logger.warn('Paid jobs failed after their print deadline', { count: ids.length, jobIds: ids });
+    return ids;
+  }
+
+  /** Run an expiry in its own transaction, then tell open screens about it. */
+  private async runExpiry(scopeSql: string, scopeParams: unknown[]): Promise<number> {
+    const client = await this.database.getClient();
+    let ids: string[] = [];
+    try {
+      await client.query('BEGIN');
+      ids = await this.expireDueJobs(client, scopeSql, scopeParams);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    this.broadcastExpired(ids);
+    return ids.length;
+  }
+
+  /** Tell any screen that is open right now. A live connection only hears pushed updates. */
+  private broadcastExpired(ids: string[]): void {
+    for (const id of ids) {
+      websocketService.broadcastJobStatus(id, 'failed', { errorMessage: EXPIRED_MESSAGE });
+    }
+  }
+
+  /**
    * Return jobs whose lease expired to the queue.
    *
    * A Pi that loses power mid-print never sends a terminal status, so without
-   * this the job would sit in `printing` forever and the customer would never
-   * be refunded or reprinted.
+   * this the job would sit in `printing` forever. A job past its deadline is
+   * failed here rather than requeued.
    */
   async reclaimExpiredLeases(): Promise<number> {
+    await this.runExpiry('TRUE', []);
+
     const result = await this.database.query<ReclaimedJobRow>(
       `UPDATE print_queue SET
          status = CASE WHEN retry_count + 1 < max_retries THEN 'queued' ELSE 'failed' END,
+         last_printer_id = CASE WHEN retry_count + 1 < max_retries
+                                THEN last_printer_id ELSE printer_id END,
          printer_id = NULL,
          assigned_at = NULL,
          started_at = NULL,
@@ -686,6 +881,7 @@ export class QueueService {
        WHERE status IN ('assigned', 'printing')
          AND lease_expires_at IS NOT NULL
          AND lease_expires_at < NOW()
+         AND job_id IN (SELECT id FROM print_jobs WHERE print_deadline_at > NOW())
        RETURNING job_id, status`
     );
 
@@ -708,54 +904,13 @@ export class QueueService {
   }
 
   /**
-   * Fail every paid job still queued or assigned once its print window has
-   * closed (paid_at + PRINT_WINDOW_MINUTES). The job is never picked up again,
-   * and it stays `payment_status = paid` so the attention queue flags it for a
-   * one-click refund. A `printing` job is left alone: the printer is already
-   * producing it, and failing it would leave paper on the tray with no record.
+   * Fail every paid job still queued, assigned or printing once its fixed
+   * deadline has passed. The job is never picked up again, and it stays
+   * `payment_status = paid` so the attention queue flags it for a one-click
+   * refund. The printer is released through last_printer_id.
    */
   async expireOutOfWindow(): Promise<number> {
-    const result = await this.database.query<{ job_id: string }>(
-      `UPDATE print_queue pq SET
-         status = 'failed',
-         printer_id = NULL,
-         assigned_at = NULL,
-         lease_expires_at = NULL,
-         error_code = 'PRINT_WINDOW_EXPIRED',
-         error_message = 'We could not print your job within 15 minutes of payment. Please show this screen to shop staff for a refund.',
-         failed_at = NOW(),
-         updated_at = NOW()
-       FROM print_jobs pj
-       WHERE pj.id = pq.job_id
-         AND pq.status IN ('queued', 'assigned')
-         AND pj.paid_at < NOW() - make_interval(mins => ${printWindowMinutes()})
-       RETURNING pq.job_id`
-    );
-
-    if (result.rowCount) {
-      const ids = result.rows.map((r) => r.job_id);
-      await this.database.query(
-        `UPDATE print_jobs SET status = 'failed',
-                error_message = 'Not printed within the print window; refund required'
-          WHERE id = ANY($1::uuid[])`,
-        [ids]
-      );
-      logger.warn('Paid jobs failed after their print window closed', {
-        count: ids.length,
-        jobIds: ids,
-      });
-
-      // Tell any screen that is open right now. The queue row alone is not
-      // enough: a live connection only hears about pushed updates.
-      for (const id of ids) {
-        websocketService.broadcastJobStatus(id, 'failed', {
-          errorMessage:
-            'We could not print your job within 15 minutes of payment. Please show this screen to shop staff for a refund.',
-        });
-      }
-    }
-
-    return result.rowCount || 0;
+    return this.runExpiry('TRUE', []);
   }
 
   /**

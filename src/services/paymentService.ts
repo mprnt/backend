@@ -14,7 +14,7 @@ import {
 import logger from '../utils/logger';
 import { RazorpayService } from './razorpayService';
 import { websocketService } from './websocketService';
-import { queueService } from './queueService';
+import { queueService, printWindowMinutes } from './queueService';
 import { revenueSplitService } from './revenueSplitService';
 
 declare global {
@@ -520,7 +520,7 @@ export class PaymentService {
       // paid-but-unprinted so it surfaces as a refund candidate.
       await client.query(
         `UPDATE print_jobs
-         SET payment_status = 'paid', paid_at = NOW(), error_message = $1
+         SET payment_status = 'paid', paid_at = NOW(), print_deadline_at = NOW() + make_interval(mins => ${printWindowMinutes()}), error_message = $1
          WHERE id = $2`,
         [
           `Amount mismatch: paid ${(args.paidAmountPaise ?? orderPaise) / 100}, job total ${jobPaise / 100}`,
@@ -542,7 +542,7 @@ export class PaymentService {
       // paid-but-unprinted so it surfaces as a refund candidate.
       await client.query(
         `UPDATE print_jobs
-         SET payment_status = 'paid', paid_at = NOW(), error_message = $1
+         SET payment_status = 'paid', paid_at = NOW(), print_deadline_at = NOW() + make_interval(mins => ${printWindowMinutes()}), error_message = $1
          WHERE id = $2`,
         ['Paid after the document was deleted (session expired); refund required', order.job_id]
       );
@@ -554,7 +554,7 @@ export class PaymentService {
     } else {
       await client.query(
         `UPDATE print_jobs
-         SET payment_status = $1, paid_at = NOW(), status = $2, queued_at = NOW()
+         SET payment_status = $1, paid_at = NOW(), print_deadline_at = NOW() + make_interval(mins => ${printWindowMinutes()}), status = $2, queued_at = NOW()
          WHERE id = $3`,
         ['paid', 'queued', order.job_id]
       );
